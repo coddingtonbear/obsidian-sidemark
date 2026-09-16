@@ -13,7 +13,7 @@ Because the sidecars are standard MRSF, the same comments work with the [Sidemar
 
 - Comment on any selected text, reply in threads, then resolve or reopen them.
 - Suggest an edit (a replacement for the selected text), then accept or decline it. Accepting rewrites the passage in the note.
-- Open suggestions are shown in the note itself: the text they'd replace is struck through, with the replacement right after it (this can be turned off in settings).
+- Open suggestions are shown in the note itself: only the words that would change are struck through, with the new words right after them (this can be turned off in settings). The sidebar card, and the preview while you write a suggestion, show the change the same way.
 - Highlights follow the text as you type, including inside tables. Updated positions are saved to the sidecar automatically.
 - **Drift:** when the commented text itself is edited, the sidebar shows what it now reads. MRSF keeps the reviewer's original selection in `selected_text` and the current text in `anchored_text`.
 - **Orphans:** comments whose passage was deleted are listed as orphaned, and "Re-anchor to selection" attaches them to new text.

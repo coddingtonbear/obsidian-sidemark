@@ -311,13 +311,14 @@ describe("AnchorTracker", () => {
     ]);
   });
 
-  it("shows an open suggestion in the note as struck-out text followed by its replacement", async () => {
-    const suggestion = { ...commentOn(TEXT, "Second", "s"), type: "suggestion", x_suggestion: { replacement: "2nd" } };
+  it("shows an open suggestion in the note by striking out the changed words and adding the new ones", async () => {
+    const suggestion = { ...commentOn(TEXT, "quick brown", "s"), type: "suggestion", x_suggestion: { replacement: "slow brown" } };
     const h = new Harness(TEXT, [suggestion]);
     await settle();
     expect(h.decorated()).toEqual([
-      ["Second", "sm-highlight sm-highlight-suggestion sm-suggestion-strike"],
-      ["+2nd", "widget"],
+      ["quick", "sm-suggestion-strike"],
+      ["quick brown", "sm-highlight sm-highlight-suggestion sm-suggestion-inline"],
+      ["+slow", "widget"],
     ]);
   });
 
@@ -325,7 +326,10 @@ describe("AnchorTracker", () => {
     const suggestion = { ...commentOn(TEXT, "Second", "s"), type: "suggestion", x_suggestion: { replacement: "" } };
     const h = new Harness(TEXT, [suggestion]);
     await settle();
-    expect(h.decorated()).toEqual([["Second", "sm-highlight sm-highlight-suggestion sm-suggestion-strike"]]);
+    expect(h.decorated()).toEqual([
+      ["Second", "sm-suggestion-strike"],
+      ["Second", "sm-highlight sm-highlight-suggestion sm-suggestion-inline"],
+    ]);
   });
 
   it("falls back to a plain suggestion highlight once the passage has changed", async () => {

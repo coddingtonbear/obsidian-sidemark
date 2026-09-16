@@ -33,6 +33,7 @@ import {
 } from "./mutations";
 import { shouldSubmitComment } from "./settings-model";
 import { formatSidebarTimestamp } from "./timestamp";
+import { wordDiff } from "./word-diff";
 
 export const VIEW_TYPE_SIDEMARK = "sidemark-sidebar";
 
@@ -44,6 +45,15 @@ export interface Draft {
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + "…";
+}
+
+/** Renders `before` → `after` as one passage with the changed words struck out or marked as added. */
+function renderDiff(el: HTMLElement, before: string, after: string): void {
+  el.empty();
+  for (const part of wordDiff(before, after)) {
+    const cls = part.kind === "same" ? undefined : part.kind === "del" ? "sm-diff-del" : "sm-diff-ins";
+    el.createSpan({ text: part.text, cls });
+  }
 }
 
 export function suggestionFailureMessage(reason: SuggestionFailure | "no-editor" | "orphaned" | "changed"): string {
@@ -309,8 +319,11 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     });
     replacement.value = draft.anchor.selected_text;
     const deletionHint = card.createDiv({ text: "This suggests deleting the selected text.", cls: "sm-field-hint" });
+    const preview = card.createDiv({ cls: "sm-suggestion-diff sm-draft-preview", attr: { "aria-label": "Preview of the change" } });
     const updateHint = (): void => {
       deletionHint.hidden = replacement.value.length > 0;
+      preview.hidden = replacement.value === draft.anchor.selected_text;
+      if (!preview.hidden) renderDiff(preview, draft.anchor.selected_text, replacement.value);
     };
     updateHint();
     replacement.addEventListener("input", updateHint);
@@ -477,19 +490,14 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
             })(),
         },
       ]);
-      const change = card.createDiv({ cls: "sm-suggestion-change" });
-      const original = change.createDiv({ text: quoteText, cls: "sm-suggestion-original" });
+      const change = card.createDiv({ cls: "sm-suggestion-diff" });
+      if (suggestion) renderDiff(change, quoteText, suggestion.replacement);
+      else change.setText(quoteText);
       if (reveal) {
-        original.addClass("sm-quote-link");
-        original.onclick = reveal;
+        change.addClass("sm-quote-link");
+        change.onclick = reveal;
       }
-      if (!isDeletion) {
-        change.createDiv({ text: "↓", cls: "sm-suggestion-arrow", attr: { "aria-hidden": "true" } });
-        change.createDiv({
-          text: suggestion ? suggestion.replacement : "Invalid suggestion data",
-          cls: "sm-suggestion-replacement",
-        });
-      }
+      if (!suggestion) card.createDiv({ text: "Invalid suggestion data.", cls: "sm-suggestion-warning" });
       if (isOpen && resolution.kind === "orphaned") {
         card.createDiv({ text: "Original passage not found.", cls: "sm-suggestion-warning" });
       } else if (isOpen && resolution.kind === "resolved" && resolution.fuzzy) {

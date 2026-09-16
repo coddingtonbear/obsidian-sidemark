@@ -6,6 +6,7 @@ import { buildThreads, type Comment, suggestionOf } from "./model";
 import type { SidecarStore } from "./store";
 import { type AnchorStyle, applyTableHighlights, rangesTouchTable } from "./table-highlight";
 import { isFullReplace, mapAnchors, type TrackedAnchor } from "./tracking";
+import { wordDiff } from "./word-diff";
 
 /** How long typing must pause before tracked positions are written to the sidecar. */
 const WRITE_DEBOUNCE_MS = 800;
@@ -316,33 +317,55 @@ export class AnchorTracker {
       .then(() => this.host.anchorsChanged(notePath));
   }
 
-  /** The highlight classes of an anchor and, for a suggestion shown in place, its replacement text. */
-  private styleOf(a: TrackedAnchor, doc: Text): AnchorStyle {
+  /**
+   * The highlight classes of an anchor and, for a suggestion that can be
+   * shown in place, its replacement text. Only a passage that still reads as
+   * it did can be shown as replaced.
+   */
+  private styleOf(a: TrackedAnchor, doc: Text): { className: string; original: string; preview: string | null } {
     const suggestion = this.suggestions.get(a.id);
     let className = "sm-highlight";
     if (suggestion) className += " sm-highlight-suggestion";
-    // Only a passage that still reads as it did can be shown as replaced.
-    const insert =
-      suggestion &&
-      suggestion.replacement !== null &&
-      this.host.showSuggestionsInline() &&
-      doc.sliceString(a.from, a.to) === suggestion.original
+    if (a.id === this.activeId) className += " sm-highlight-active";
+    const original = doc.sliceString(a.from, a.to);
+    const preview =
+      suggestion && suggestion.replacement !== null && this.host.showSuggestionsInline() && original === suggestion.original
         ? suggestion.replacement
         : null;
-    if (insert !== null) className += " sm-suggestion-strike";
-    if (a.id === this.activeId) className += " sm-highlight-active";
-    return { className, insert: insert || null };
+    return { className, original, preview };
+  }
+
+  /** Tables are drawn by replacing the whole passage, since their rendered text differs from the source. */
+  private tableStyleOf(a: TrackedAnchor, doc: Text): AnchorStyle {
+    const { className, preview } = this.styleOf(a, doc);
+    if (preview === null) return { className, insert: null };
+    return { className: `${className} sm-suggestion-strike`, insert: preview || null };
   }
 
   private buildDecorations(doc: Text): DecorationSet {
     const ranges: Range<Decoration>[] = [];
     for (const a of this.anchors) {
       if (a.from >= a.to || a.to > doc.length) continue;
-      const { className, insert } = this.styleOf(a, doc);
-      ranges.push(Decoration.mark({ class: className, attributes: { "data-sm-id": a.id } }).range(a.from, a.to));
-      if (insert) {
-        const active = a.id === this.activeId;
-        ranges.push(Decoration.widget({ widget: new ReplacementWidget(a.id, insert, active), side: 1 }).range(a.to));
+      const { className, original, preview } = this.styleOf(a, doc);
+      const attributes = { "data-sm-id": a.id };
+      if (preview === null) {
+        ranges.push(Decoration.mark({ class: className, attributes }).range(a.from, a.to));
+        continue;
+      }
+      ranges.push(Decoration.mark({ class: `${className} sm-suggestion-inline`, attributes }).range(a.from, a.to));
+      // Strike out only the words that change and show each replacement right after them.
+      const active = a.id === this.activeId;
+      let pos = a.from;
+      for (const part of wordDiff(original, preview)) {
+        if (part.kind === "same") {
+          pos += part.text.length;
+        } else if (part.kind === "del") {
+          ranges.push(Decoration.mark({ class: "sm-suggestion-strike", attributes }).range(pos, pos + part.text.length));
+          pos += part.text.length;
+        } else {
+          const widget = new ReplacementWidget(a.id, part.text, active);
+          ranges.push(Decoration.widget({ widget, side: 1 }).range(pos));
+        }
       }
     }
     return Decoration.set(ranges, true);
@@ -357,7 +380,7 @@ export class AnchorTracker {
         const doc = this.view.state.doc;
         const text = doc.toString();
         applyTableHighlights(this.view, this.anchors, text, text.length, (id) => void this.host.openSidebar(id), (a) =>
-          this.styleOf(a, doc)
+          this.tableStyleOf(a, doc)
         );
       },
     });
