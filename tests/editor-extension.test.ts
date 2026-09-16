@@ -300,6 +300,31 @@ describe("AnchorTracker", () => {
     expect(h.threadAtCursor).toHaveBeenCalledTimes(4);
   });
 
+  it("shows a thread selected in the sidebar as active until the cursor moves", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a"), commentOn(TEXT, "Second", "b")]);
+    await settle();
+    h.threadAtCursor.mockClear();
+    h.tracker.showThread("b");
+    expect(h.decorated()).toEqual([
+      ["quick brown", "sm-highlight"],
+      ["Second", "sm-highlight sm-highlight-active"],
+    ]);
+    // Other changes (e.g. a reply being saved) don't clear it or announce anything.
+    await h.store.update(NOTE, (doc) => {
+      doc.comments.push({ id: "r", author: "A", timestamp: ts, text: "reply", resolved: false, reply_to: "b" });
+    });
+    await settle();
+    h.insert(0, "x");
+    expect(h.decorated()[1][1]).toContain("sm-highlight-active");
+    expect(h.threadAtCursor).not.toHaveBeenCalled();
+    // Moving the cursor takes over again.
+    h.apply({ selection: { anchor: h.text().indexOf("quick") + 1 } });
+    expect(h.decorated()[0][1]).toContain("sm-highlight-active");
+    expect(h.threadAtCursor).toHaveBeenLastCalledWith(NOTE, "a");
+    h.tracker.showThread(null);
+    expect(h.decorated().some(([, cls]) => cls.includes("active"))).toBe(false);
+  });
+
   it("marks suggestion highlights differently", async () => {
     const suggestion = { ...commentOn(TEXT, "Second", "s"), type: "suggestion", x_suggestion: { replacement: "2nd" } };
     const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a"), suggestion]);

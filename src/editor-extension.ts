@@ -24,6 +24,9 @@ const WRITE_DEBOUNCE_MS = 800;
 /** Asks a tracker to rebuild its anchors from the store. */
 const resyncEffect = StateEffect.define<null>();
 
+/** Marks a thread's passage as the active one (or none), e.g. when its card is selected in the sidebar. */
+const showThreadEffect = StateEffect.define<string | null>();
+
 export interface EditorHost {
   readonly store: SidecarStore;
   openSidebar(focusId?: string): unknown;
@@ -104,6 +107,8 @@ export class AnchorTracker {
   private destroyed = false;
   /** The thread whose passage contains the cursor, shown with a stronger highlight. */
   private activeId: string | null = null;
+  /** The active thread was chosen in the sidebar; it stays until the cursor moves. */
+  private activeFromSidebar = false;
   /** Anchor signature of each comment as last seen in (or written to) the sidecar. */
   private readonly signatures = new Map<string, string>();
   /** Edit suggestions (highlighted differently), with the replacement text (null when it can't be acted on) and the passage it was made for. */
@@ -163,6 +168,18 @@ export class AnchorTracker {
       if (!best || a.to - a.from < best.to - best.from) best = a;
     }
     return best;
+  }
+
+  /**
+   * Shows a thread's passage as the active one and scrolls it into view,
+   * without moving the cursor or taking focus. Pass null to clear it.
+   */
+  showThread(id: string | null): void {
+    if (this.destroyed) return;
+    const anchor = id ? this.anchors.find((a) => a.id === id) : undefined;
+    const effects: StateEffect<unknown>[] = [showThreadEffect.of(anchor ? anchor.id : null)];
+    if (anchor) effects.push(EditorView.scrollIntoView(anchor.from, { y: "nearest", yMargin: 48 }));
+    this.view.dispatch({ effects });
   }
 
   /** Rebuilds decorations, e.g. after a display setting changed. */
@@ -225,6 +242,16 @@ export class AnchorTracker {
       this.scheduleTableHighlight();
     }
     if (u.selectionSet || u.docChanged || resync) this.updateActive(u.state.selection.main.head, u.selectionSet);
+    for (const tr of u.transactions) {
+      for (const e of tr.effects) {
+        // Selected from the sidebar, which already knows; don't announce it back.
+        if (e.is(showThreadEffect)) {
+          this.activeId = e.value;
+          this.activeFromSidebar = e.value !== null;
+          this.scheduleTableHighlight();
+        }
+      }
+    }
     this.decorations = this.buildDecorations(u.state.doc);
   }
 
@@ -240,6 +267,8 @@ export class AnchorTracker {
       if (!best || a.to - a.from < best.to - best.from) best = a;
     }
     const id = best?.id ?? null;
+    if (this.activeFromSidebar && !moved) return;
+    this.activeFromSidebar = false;
     if (id === this.activeId && !(id === null && moved)) return;
     this.activeId = id;
     if (this.notePath) this.host.threadAtCursor(this.notePath, id);

@@ -257,6 +257,11 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     return this.settings.showSuggestionsInline;
   }
 
+  /** Highlights a thread's passage in every editor showing the note (null clears it). */
+  showThreadInEditor(file: TFile, id: string | null): void {
+    for (const tracker of this.trackersFor(file.path)) tracker.showThread(id);
+  }
+
   decideSuggestion(notePath: string, id: string, result: SuggestionResult): void {
     const file = this.app.vault.getFileByPath(notePath);
     if (file) void this.decideSuggestionIn(file, id, result);

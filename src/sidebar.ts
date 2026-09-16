@@ -118,6 +118,8 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     this.registerDomEvent(this.contentEl, "keydown", (e) => {
       if (e.key !== "Escape" || (e.target instanceof Element && e.target.closest("textarea, input"))) return;
       this.clearFocus();
+      const file = this.app.workspace.getActiveFile();
+      if (file) this.plugin.showThreadInEditor(file, null);
     });
     this.requestRender(true);
   }
@@ -511,6 +513,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     card.addEventListener("click", (event) => {
       if (event.target instanceof Element && event.target.closest("button, textarea, a, input")) return;
       this.focusThread(root.id, false);
+      this.plugin.showThreadInEditor(file, root.id);
     });
     const copyItem = {
       title: "Copy",
