@@ -159,6 +159,23 @@
   padding: 4px;
 }
 
+.sm-entry-action.sm-accept:hover {
+  color: var(--color-green, #3fb950);
+}
+
+.sm-entry-action.sm-decline:hover {
+  color: var(--color-red, #e5534b);
+}
+
+.sm-entry-action.sm-action-unavailable {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sm-entry-action.sm-action-unavailable:hover {
+  color: inherit;
+}
+
 .sm-entry-menu-trigger svg,
 .sm-entry-action svg {
   width: 14px;

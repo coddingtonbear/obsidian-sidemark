@@ -55,12 +55,14 @@ function renderDiff(el: HTMLElement, before: string, after: string): void {
   }
 }
 
-export function suggestionFailureMessage(reason: SuggestionFailure | "no-editor" | "orphaned" | "changed"): string {
+export function suggestionFailureMessage(reason: SuggestionFailure | "no-editor" | "orphaned" | "changed" | "ambiguous"): string {
   switch (reason) {
     case "no-editor":
       return "Open this note in an editor before accepting the suggestion.";
     case "orphaned":
       return "The original passage no longer exists. Re-anchor the suggestion before accepting it.";
+    case "ambiguous":
+      return "This passage appears more than once in the note. Re-anchor the suggestion before accepting it.";
     case "changed":
       return "The passage has changed since the suggestion was made. Re-anchor it before accepting.";
     case "invalid-suggestion":
@@ -396,6 +398,36 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     menu.showAtPosition({ x: rect.right, y: rect.bottom, left: true }, trigger.ownerDocument);
   }
 
+  /** A small icon button for a card's header. */
+  private addIconButton(
+    controls: HTMLElement,
+    options: { icon: string; label: string; cls?: string; unavailable?: string | null; run: (button: HTMLButtonElement) => void }
+  ): HTMLButtonElement {
+    const button = controls.createEl("button", {
+      cls: ["sm-entry-action", "clickable-icon", ...(options.cls ? [options.cls] : [])],
+      attr: { "aria-label": options.label },
+    });
+    setIcon(button, options.icon);
+    if (options.unavailable) {
+      // Not `disabled`: disabled buttons get no hover events, so the reason couldn't be shown.
+      button.addClass("sm-action-unavailable");
+      button.setAttr("aria-disabled", "true");
+      setTooltip(button, `${options.label}: ${options.unavailable}`);
+      button.onclick = () => new Notice(options.unavailable ?? "");
+    } else {
+      setTooltip(button, options.label);
+      button.onclick = () => options.run(button);
+    }
+    return button;
+  }
+
+  private reopenThread(file: TFile, root: Comment, isSuggestion: boolean): void {
+    void this.plugin.updateComments(file, (doc) => {
+      if (isSuggestion) reopenSuggestion(doc, root.id);
+      else setThreadResolved(doc, root.id, false);
+    });
+  }
+
   private addMenuTrigger(
     controls: HTMLElement,
     label: string,
@@ -474,6 +506,22 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       this.paintAuthor(meta.createSpan({ text: String(root.author), cls: "sm-author" }), String(root.author));
       this.addTimestamp(meta, String(root.timestamp));
       const controls = meta.createDiv({ cls: "sm-entry-controls" });
+      if (isOpen && suggestion && !suggestion.result) {
+        const decide = (result: "accepted" | "declined") => (button: HTMLButtonElement) => {
+          button.disabled = true;
+          void this.plugin.decideSuggestionIn(file, root.id, result).then((ok) => {
+            if (!ok) button.disabled = false;
+          });
+        };
+        let unavailable: string | null = null;
+        if (resolution.kind === "orphaned") unavailable = suggestionFailureMessage("orphaned");
+        else if (resolution.ambiguous) unavailable = suggestionFailureMessage("ambiguous");
+        else if (resolution.fuzzy) unavailable = suggestionFailureMessage("changed");
+        this.addIconButton(controls, { icon: "check", label: "Accept suggestion", cls: "sm-accept", unavailable, run: decide("accepted") });
+        this.addIconButton(controls, { icon: "x", label: "Decline suggestion", cls: "sm-decline", run: decide("declined") });
+      } else if (!isOpen || suggestion?.result) {
+        this.addIconButton(controls, { icon: "rotate-ccw", label: "Reopen suggestion", run: () => this.reopenThread(file, root, true) });
+      }
       this.addMenuTrigger(controls, "More options for suggestion", [
         copyItem,
         {
@@ -521,31 +569,8 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       this.renderEntry(card, file, thread.root, entry, claimsSuggestion, copyItem);
     }
 
+    // Decisions live in the header; the only bottom action repairs a thread's anchor.
     const actions = card.createDiv({ cls: "sm-actions" });
-    if (claimsSuggestion && isOpen && suggestion && !suggestion.result) {
-      const accept = actions.createEl("button", { text: "Accept", cls: "mod-cta" });
-      accept.disabled = resolution.kind !== "resolved" || resolution.ambiguous;
-      const decline = actions.createEl("button", { text: "Decline" });
-      const decide = (result: "accepted" | "declined", button: HTMLButtonElement): void => {
-        const wasDisabled = accept.disabled;
-        accept.disabled = decline.disabled = true;
-        void this.plugin.decideSuggestionIn(file, root.id, result).then((ok) => {
-          if (ok) return;
-          accept.disabled = wasDisabled;
-          decline.disabled = false;
-          button.focus();
-        });
-      };
-      accept.onclick = () => decide("accepted", accept);
-      decline.onclick = () => decide("declined", decline);
-    } else if (!isOpen) {
-      const reopen = actions.createEl("button", { text: "Reopen" });
-      reopen.onclick = () =>
-        void this.plugin.updateComments(file, (doc) => {
-          if (claimsSuggestion) reopenSuggestion(doc, root.id);
-          else setThreadResolved(doc, root.id, false);
-        });
-    }
     if (isOpen && (resolution.kind === "orphaned" || resolution.ambiguous || (claimsSuggestion && resolution.fuzzy))) {
       const reanchor = actions.createEl("button", { text: "Re-anchor to selection" });
       reanchor.onclick = () => void this.reanchorFromSelection(file, root.id);
@@ -596,14 +621,12 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     this.paintAuthor(meta.createSpan({ text: author, cls: "sm-author" }), author);
     if (!(isRoot && inSuggestion)) this.addTimestamp(meta, String(entry.timestamp));
     const controls = meta.createDiv({ cls: "sm-entry-controls" });
-    if (isRoot && !inSuggestion && !isResolved(root)) {
-      const resolveBtn = controls.createEl("button", {
-        cls: "sm-entry-action clickable-icon",
-        attr: { "aria-label": "Resolve comment" },
-      });
-      setIcon(resolveBtn, "check");
-      setTooltip(resolveBtn, "Resolve");
-      resolveBtn.onclick = () => this.resolveThread(file, root.id);
+    if (isRoot && !inSuggestion) {
+      if (isResolved(root)) {
+        this.addIconButton(controls, { icon: "rotate-ccw", label: "Reopen comment", run: () => this.reopenThread(file, root, false) });
+      } else {
+        this.addIconButton(controls, { icon: "check", label: "Resolve comment", cls: "sm-accept", run: () => this.resolveThread(file, root.id) });
+      }
     }
     const deleteLabel = isRoot ? (inSuggestion ? "Delete explanation" : "Delete comment") : "Delete reply";
     const deleteMessage = isRoot && !inSuggestion

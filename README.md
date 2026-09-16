@@ -36,9 +36,10 @@ If you use Obsidian Sync, turn on syncing of "other file types" so the `.review.
 - **Add a comment:** select text, then use *Add comment* from the right-click menu or the command palette. Type in the sidebar and press Enter.
 - **Suggest an edit:** select text, then use *Suggest edit*. Edit the proposed replacement and optionally explain why. Clear the replacement to suggest deleting the text.
 - **Review suggestions from the note:** hover over a suggestion for ✓ (accept) and ✕ (decline) buttons. The commands *Accept suggestion at cursor*, *Decline suggestion at cursor*, *Go to next suggestion* and *Go to previous suggestion* can be bound to hotkeys.
+- **Resolve and decide:** each card's actions sit in its top-right corner: ✓ resolves a comment or accepts a suggestion, ✕ declines a suggestion, and ↺ reopens a resolved thread.
 - **Open a thread:** click a highlight to open its thread; click the quote in the sidebar to jump to the passage.
 - **Edit your own text:** double-click a comment's text to edit it. The `…` menu copies or deletes a comment.
-- **Undoing an accepted suggestion:** Undo restores the note's text, but the suggestion stays marked accepted. Use *Show resolved* → *Reopen* to act on it again.
+- **Undoing an accepted suggestion:** Undo restores the note's text, but the suggestion stays marked accepted. Use *Show resolved*, then the ↺ (Reopen) button on its card, to act on it again.
 
 ## The file format
 
