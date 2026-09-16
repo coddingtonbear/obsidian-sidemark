@@ -171,6 +171,12 @@
   color: var(--text-muted);
 }
 
+.sm-field-hint {
+  margin-top: 2px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
 .sm-suggestion-card {
   border-left: 3px dashed var(--color-green, #3fb950);
 }

@@ -31,6 +31,7 @@ import { DEFAULT_SETTINGS, parseSettings, settingsEffects, type SidemarkSettings
 import { notePathFor } from "./sidecar-path";
 import { type Draft, isSidebar, type SidemarkSidebar, SidemarkSidebar as SidebarView, VIEW_TYPE_SIDEMARK } from "./sidebar";
 import { type RenameOutcome, SidecarStore } from "./store";
+import { suggestionEdit } from "./suggestion-edit";
 import { migrateTandemComments } from "./tandem-runner";
 import { VaultSidecarIO } from "./vault-io";
 
@@ -445,10 +446,11 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       });
       return { ok: false, reason: "changed" };
     }
+    const edit = suggestionEdit(editor.getValue(), from, to, replacement);
     editor.transaction({
-      changes: [{ from: editor.offsetToPos(from), to: editor.offsetToPos(to), text: replacement }],
+      changes: [{ from: editor.offsetToPos(edit.from), to: editor.offsetToPos(edit.to), text: edit.insert }],
     });
-    editor.setCursor(editor.offsetToPos(from + replacement.length));
+    editor.setCursor(editor.offsetToPos(edit.from + edit.insert.length));
     return { ok: true };
   }
 

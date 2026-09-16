@@ -25,8 +25,11 @@ export function formatThread(thread: Thread, includeQuote: boolean): string {
   if (includeQuote && root.selected_text) parts.push(quote(root.selected_text));
   if (suggestion) {
     const outcome = suggestion.result ? ` — ${suggestion.result}` : "";
+    const byline = `by ${String(root.author)}** (${formatTs(String(root.timestamp))})${outcome}`;
     parts.push(
-      `**Suggested edit by ${String(root.author)}** (${formatTs(String(root.timestamp))})${outcome}:\n${quote(suggestion.replacement)}`
+      suggestion.replacement === ""
+        ? `**Suggested deletion ${byline}`
+        : `**Suggested edit ${byline}:\n${quote(suggestion.replacement)}`
     );
   }
   const entries = [...(suggestion && !root.text ? [] : [root]), ...thread.replies].map(entryLine);

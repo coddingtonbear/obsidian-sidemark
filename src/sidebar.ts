@@ -305,9 +305,15 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     card.createDiv({ text: "Suggested replacement", cls: "sm-field-label" });
     const replacement = card.createEl("textarea", {
       cls: "sm-input",
-      attr: { placeholder: "Replacement text…", rows: "3", "aria-label": "Suggested replacement" },
+      attr: { placeholder: "Leave empty to suggest deleting the text", rows: "3", "aria-label": "Suggested replacement" },
     });
     replacement.value = draft.anchor.selected_text;
+    const deletionHint = card.createDiv({ text: "This suggests deleting the selected text.", cls: "sm-field-hint" });
+    const updateHint = (): void => {
+      deletionHint.hidden = replacement.value.length > 0;
+    };
+    updateHint();
+    replacement.addEventListener("input", updateHint);
     card.createDiv({ text: "Explanation (optional)", cls: "sm-field-label" });
     const note = card.createEl("textarea", {
       cls: "sm-input",
@@ -319,11 +325,6 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
 
     const submit = (): void => {
       if (save.disabled) return;
-      if (replacement.value.length === 0) {
-        new Notice("Enter replacement text first.");
-        replacement.focus();
-        return;
-      }
       if (replacement.value === draft.anchor.selected_text) {
         new Notice("The replacement is identical to the original text.");
         replacement.focus();
@@ -424,6 +425,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     const { root } = thread;
     const suggestion = suggestionOf(root);
     const claimsSuggestion = root.x_suggestion !== undefined;
+    const isDeletion = suggestion?.replacement === "";
     const isOpen = !root.resolved;
     const cls = ["sm-card"];
     if (root.resolved) cls.push("sm-resolved");
@@ -451,7 +453,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
 
     if (claimsSuggestion) {
       const heading = card.createDiv({ cls: "sm-suggestion-heading" });
-      heading.createSpan({ text: "Suggested edit", cls: "sm-suggestion-title" });
+      heading.createSpan({ text: isDeletion ? "Suggested deletion" : "Suggested edit", cls: "sm-suggestion-title" });
       if (suggestion?.result) {
         heading.createSpan({
           text: suggestion.result === "accepted" ? "Accepted" : "Declined",
@@ -481,11 +483,13 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
         original.addClass("sm-quote-link");
         original.onclick = reveal;
       }
-      change.createDiv({ text: "↓", cls: "sm-suggestion-arrow", attr: { "aria-hidden": "true" } });
-      change.createDiv({
-        text: suggestion ? suggestion.replacement : "Invalid suggestion data",
-        cls: "sm-suggestion-replacement",
-      });
+      if (!isDeletion) {
+        change.createDiv({ text: "↓", cls: "sm-suggestion-arrow", attr: { "aria-hidden": "true" } });
+        change.createDiv({
+          text: suggestion ? suggestion.replacement : "Invalid suggestion data",
+          cls: "sm-suggestion-replacement",
+        });
+      }
       if (isOpen && resolution.kind === "orphaned") {
         card.createDiv({ text: "Original passage not found.", cls: "sm-suggestion-warning" });
       } else if (isOpen && resolution.kind === "resolved" && resolution.fuzzy) {

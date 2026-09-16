@@ -33,7 +33,7 @@ If you use Obsidian Sync, turn on syncing of "other file types" so the `.review.
 ## Using it
 
 - **Add a comment:** select text, then use *Add comment* from the right-click menu or the command palette. Type in the sidebar and press Enter.
-- **Suggest an edit:** select text, then use *Suggest edit*. Edit the proposed replacement and optionally explain why.
+- **Suggest an edit:** select text, then use *Suggest edit*. Edit the proposed replacement and optionally explain why. Clear the replacement to suggest deleting the text.
 - **Open a thread:** click a highlight to open its thread; click the quote in the sidebar to jump to the passage.
 - **Edit your own text:** double-click a comment's text to edit it. The `…` menu copies or deletes a comment.
 - **Undoing an accepted suggestion:** Undo restores the note's text, but the suggestion stays marked accepted. Use *Show resolved* → *Reopen* to act on it again.
@@ -45,7 +45,7 @@ Sidecars follow MRSF v1.0. Sidemark adds a few extension fields, which MRSF tool
 | Field | Meaning |
 | --- | --- |
 | `x_prefix` / `x_suffix` | Up to 20 characters before and after the quote, used to tell identical quotes apart. Together with `selected_text`, these match the `prefix`, `exact` and `suffix` of a [W3C TextQuoteSelector](https://www.w3.org/TR/annotation-model/#text-quote-selector), the quote anchoring Tandem Comments uses. |
-| `x_suggestion` | `{ replacement, result? }` on a root comment with `type: suggestion`. The root's `text` is the optional explanation; `result` is `accepted` or `declined` once decided. |
+| `x_suggestion` | `{ replacement, result? }` on a root comment with `type: suggestion`. An empty `replacement` suggests deleting the passage. The root's `text` is the optional explanation; `result` is `accepted` or `declined` once decided. |
 | `x_tandem_id` | The original ID of a comment converted from Tandem Comments. |
 
 An example:
