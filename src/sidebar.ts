@@ -572,7 +572,10 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
             .updateComments(file, (doc) => addReply(doc, root.id, this.plugin.newEntry(text)))
             .then((ok) => {
               reply.disabled = false;
-              if (ok) reply.value = "";
+              if (!ok) return;
+              reply.value = "";
+              // The render triggered by the save was skipped while the reply was still in the box.
+              this.requestRender(false);
             });
         }
       };
