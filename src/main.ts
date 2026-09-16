@@ -578,19 +578,31 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     const folder = file.parent && !file.parent.isRoot() ? file.parent.path + "/" : "";
     const path = normalizePath(`${folder}${file.basename} – Comments.md`);
     const existing = this.app.vault.getAbstractFileByPath(path);
+    let exported: TFile;
     if (existing instanceof TFile) {
-      const replace = await confirmAction(this.app, {
-        title: "Replace the earlier export?",
-        message: `${path} already exists. Exporting again replaces its contents, including any edits made to it.`,
-        confirmLabel: "Replace",
-      });
-      if (!replace) return;
+      // An export is a snapshot, so exporting again replaces the previous one.
       await this.app.vault.modify(existing, content);
+      exported = existing;
     } else if (existing) {
       new Notice(`Can't export: ${path} is a folder.`);
       return;
-    } else await this.app.vault.create(path, content);
+    } else {
+      exported = await this.app.vault.create(path, content);
+    }
+    await this.openExport(exported);
     new Notice(`Comments exported to ${path}`);
+  }
+
+  /** Shows the export, reusing a tab that already has it open. */
+  private async openExport(file: TFile): Promise<void> {
+    const { workspace } = this.app;
+    const open = workspace.getLeavesOfType("markdown").find((leaf) => leaf.view instanceof MarkdownView && leaf.view.file?.path === file.path);
+    if (open) {
+      await workspace.revealLeaf(open);
+      workspace.setActiveLeaf(open, { focus: true });
+      return;
+    }
+    await workspace.getLeaf("tab").openFile(file);
   }
 
   async migrateTandem(): Promise<void> {

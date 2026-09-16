@@ -20,7 +20,7 @@ Because the sidecars are standard MRSF, the same comments work with the [Sidemar
 - **Outside edits:** changes to the note or its sidecar made outside Obsidian (sync, git, an AI assistant, the `mrsf` tool) are picked up live.
 - **Renames and deletes:** renaming or moving a note moves its sidecar and updates its `document` field; renaming a folder is handled too. Deleting a note moves its sidecar to the trash with it.
 - Comment text is rendered as Markdown, so `[[wikilinks]]` work and show hover previews.
-- Commands to export a note's comments to a new note, and to remove resolved threads.
+- Commands to remove resolved threads, and to export a note's comments to `<Note> – Comments.md` next to it. The export opens in a new tab; exporting again replaces the previous export.
 - **Tandem Comments conversion:** a button in settings (also available as a command) converts every note's `tandem-comments` block into a sidecar.
 
 ## Installing (manually, for now)
