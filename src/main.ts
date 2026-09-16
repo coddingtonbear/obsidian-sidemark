@@ -164,6 +164,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     await this.saveData(this.settings);
     const effects = settingsEffects(previous, this.settings);
     if (effects.refreshHighlights) this.applyHighlightAppearance();
+    if (effects.refreshEditors) for (const tracker of this.trackers) tracker.refresh();
     if (effects.refreshSidebar) {
       for (const view of this.sidebars()) view.settingsChanged(effects.resetResolvedVisibility);
     }
@@ -219,6 +220,10 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       if (id) view.focusThread(id);
       else view.clearFocus();
     }
+  }
+
+  showSuggestionsInline(): boolean {
+    return this.settings.showSuggestionsInline;
   }
 
   /**

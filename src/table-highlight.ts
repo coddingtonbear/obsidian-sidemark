@@ -1,6 +1,12 @@
 import type { EditorView } from "@codemirror/view";
 import type { TrackedAnchor } from "./tracking";
 
+/** How one anchor is drawn: its highlight classes, and replacement text to show after it (suggestions). */
+export interface AnchorStyle {
+  className: string;
+  insert: string | null;
+}
+
 /**
  * Live Preview renders tables as widgets that replace the source with a
  * <table>, and CodeMirror doesn't draw mark decorations inside replaced
@@ -176,6 +182,7 @@ function wrapRange(
   start: number,
   len: number,
   id: string,
+  style: AnchorStyle,
   onClick: (id: string) => void
 ): boolean {
   const doc = root.ownerDocument;
@@ -196,18 +203,15 @@ function wrapRange(
     if (pos >= end) break;
   }
   if (targets.length === 0) return false;
-  for (const t of targets) {
-    const range = doc.createRange();
-    range.setStart(t.node, t.s);
-    range.setEnd(t.node, t.e);
+  // CodeMirror's event handlers don't reach the table widget's DOM, so the
+  // listener goes on the span. The event is swallowed so the widget doesn't
+  // switch to its editing mode, where the highlight would disappear; click
+  // elsewhere in the cell to edit it.
+  const makeSpan = (className: string): HTMLSpanElement => {
     const span = doc.createElement("span");
-    span.className = "sm-highlight";
+    span.className = className;
     span.dataset.smId = id;
     span.dataset.smTable = "1";
-    // CodeMirror's event handlers don't reach the table widget's DOM, so the
-    // listener goes on the span. The event is swallowed so the widget doesn't
-    // switch to its editing mode, where the highlight would disappear; click
-    // elsewhere in the cell to edit it.
     const swallow = (e: Event) => {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -218,17 +222,32 @@ function wrapRange(
     });
     span.addEventListener("mousedown", swallow);
     span.addEventListener("click", swallow);
+    return span;
+  };
+  let last: HTMLSpanElement | null = null;
+  for (const t of targets) {
+    const range = doc.createRange();
+    range.setStart(t.node, t.s);
+    range.setEnd(t.node, t.e);
+    const span = makeSpan(style.className);
     try {
       range.surroundContents(span);
     } catch {
       return false;
     }
+    last = span;
+  }
+  if (last && style.insert) {
+    const insert = makeSpan("sm-suggestion-insert");
+    insert.textContent = style.insert;
+    last.after(insert);
   }
   return true;
 }
 
 /** Removes every table highlight this module injected (before re-applying). */
 export function clearTableHighlights(view: EditorView): void {
+  view.contentDOM.querySelectorAll<HTMLElement>("span.sm-suggestion-insert[data-sm-table]").forEach((span) => span.remove());
   view.contentDOM.querySelectorAll<HTMLElement>("span.sm-highlight[data-sm-table]").forEach((span) => {
     const parent = span.parentNode;
     if (!parent) return;
@@ -247,7 +266,8 @@ export function applyTableHighlights(
   anchors: TrackedAnchor[],
   text: string,
   proseLen: number,
-  onClick: (id: string) => void
+  onClick: (id: string) => void,
+  styleOf: (anchor: TrackedAnchor) => AnchorStyle = () => ({ className: "sm-highlight", insert: null })
 ): void {
   clearTableHighlights(view);
   const tables = findTables(text, proseLen);
@@ -269,7 +289,7 @@ export function applyTableHighlights(
       const visible = visibleText(text.slice(a.from, a.to));
       if (!visible) continue;
       const k = cellEl.textContent?.indexOf(visible) ?? -1;
-      if (k >= 0) wrapRange(cellEl, k, visible.length, a.id, onClick);
+      if (k >= 0) wrapRange(cellEl, k, visible.length, a.id, styleOf(a), onClick);
     } catch {
       // Ignore; this anchor just isn't highlighted in this pass.
     }

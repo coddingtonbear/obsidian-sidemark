@@ -1,10 +1,10 @@
-import { RangeSetBuilder, StateEffect } from "@codemirror/state";
-import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { type Range, StateEffect, type Text } from "@codemirror/state";
+import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType } from "@codemirror/view";
 import { editorInfoField } from "obsidian";
 import { applyTrackedPosition, PERSIST_MIN_SIMILARITY, resolveComment } from "./anchoring";
-import { buildThreads, type Comment } from "./model";
+import { buildThreads, type Comment, suggestionOf } from "./model";
 import type { SidecarStore } from "./store";
-import { applyTableHighlights, rangesTouchTable } from "./table-highlight";
+import { type AnchorStyle, applyTableHighlights, rangesTouchTable } from "./table-highlight";
 import { isFullReplace, mapAnchors, type TrackedAnchor } from "./tracking";
 
 /** How long typing must pause before tracked positions are written to the sidecar. */
@@ -22,6 +22,36 @@ export interface EditorHost {
   anchorsChanged(notePath: string): void;
   /** The cursor moved into a comment's highlighted passage (`id`) or out of all of them (null). */
   threadAtCursor(notePath: string, id: string | null): void;
+  /** Whether open suggestions are shown in the note as struck-out text followed by their replacement. */
+  showSuggestionsInline(): boolean;
+}
+
+/** A suggestion's replacement, shown after the passage it would replace. */
+class ReplacementWidget extends WidgetType {
+  constructor(
+    readonly id: string,
+    readonly text: string,
+    readonly active: boolean
+  ) {
+    super();
+  }
+
+  eq(other: ReplacementWidget): boolean {
+    return other.id === this.id && other.text === this.text && other.active === this.active;
+  }
+
+  toDOM(view: EditorView): HTMLElement {
+    const span = view.dom.ownerDocument.createElement("span");
+    span.className = "sm-suggestion-insert" + (this.active ? " sm-suggestion-insert-active" : "");
+    span.textContent = this.text;
+    span.setAttribute("data-sm-id", this.id);
+    span.setAttribute("aria-label", `Suggested replacement: ${this.text}`);
+    return span;
+  }
+
+  ignoreEvent(): boolean {
+    return false;
+  }
 }
 
 /** The anchoring fields that, when changed by someone else, force a fresh resolution. */
@@ -58,8 +88,8 @@ export class AnchorTracker {
   private activeId: string | null = null;
   /** Anchor signature of each comment as last seen in (or written to) the sidecar. */
   private readonly signatures = new Map<string, string>();
-  /** Threads that are edit suggestions, highlighted differently. */
-  private readonly suggestions = new Set<string>();
+  /** Open edit suggestions (highlighted differently), with the replacement text and the passage it was made for. */
+  private readonly suggestions = new Map<string, { replacement: string | null; original: string }>();
   /** Comments whose position is only a guess (ambiguous or weak fuzzy match) and must not be saved. */
   private readonly unconfirmed = new Set<string>();
 
@@ -100,6 +130,11 @@ export class AnchorTracker {
     this.unsubscribe = this.host.store.onChange((change) => {
       if (change.notePath === this.notePath && change.origin !== "tracking") this.requestResync();
     });
+  }
+
+  /** Rebuilds decorations, e.g. after a display setting changed. */
+  refresh(): void {
+    this.requestResync();
   }
 
   /** Follows a rename of the tracked note, keeping the live anchors. */
@@ -157,7 +192,7 @@ export class AnchorTracker {
       this.scheduleTableHighlight();
     }
     if (u.selectionSet || u.docChanged || resync) this.updateActive(u.state.selection.main.head, u.selectionSet);
-    this.decorations = this.buildDecorations(u.state.doc.length);
+    this.decorations = this.buildDecorations(u.state.doc);
   }
 
   /**
@@ -207,7 +242,9 @@ export class AnchorTracker {
     this.suggestions.clear();
     for (const root of this.openRoots()) {
       seen.add(root.id);
-      if (root.x_suggestion !== undefined) this.suggestions.add(root.id);
+      if (root.x_suggestion !== undefined) {
+        this.suggestions.set(root.id, { replacement: suggestionOf(root)?.replacement ?? null, original: root.selected_text ?? "" });
+      }
       const signature = anchorSignature(root);
       const live = previous.get(root.id);
       if (!force && live && this.signatures.get(root.id) === signature) {
@@ -279,16 +316,36 @@ export class AnchorTracker {
       .then(() => this.host.anchorsChanged(notePath));
   }
 
-  private buildDecorations(length: number): DecorationSet {
-    const builder = new RangeSetBuilder<Decoration>();
+  /** The highlight classes of an anchor and, for a suggestion shown in place, its replacement text. */
+  private styleOf(a: TrackedAnchor, doc: Text): AnchorStyle {
+    const suggestion = this.suggestions.get(a.id);
+    let className = "sm-highlight";
+    if (suggestion) className += " sm-highlight-suggestion";
+    // Only a passage that still reads as it did can be shown as replaced.
+    const insert =
+      suggestion &&
+      suggestion.replacement !== null &&
+      this.host.showSuggestionsInline() &&
+      doc.sliceString(a.from, a.to) === suggestion.original
+        ? suggestion.replacement
+        : null;
+    if (insert !== null) className += " sm-suggestion-strike";
+    if (a.id === this.activeId) className += " sm-highlight-active";
+    return { className, insert: insert || null };
+  }
+
+  private buildDecorations(doc: Text): DecorationSet {
+    const ranges: Range<Decoration>[] = [];
     for (const a of this.anchors) {
-      if (a.from >= a.to || a.to > length) continue;
-      let cls = "sm-highlight";
-      if (this.suggestions.has(a.id)) cls += " sm-highlight-suggestion";
-      if (a.id === this.activeId) cls += " sm-highlight-active";
-      builder.add(a.from, a.to, Decoration.mark({ class: cls, attributes: { "data-sm-id": a.id } }));
+      if (a.from >= a.to || a.to > doc.length) continue;
+      const { className, insert } = this.styleOf(a, doc);
+      ranges.push(Decoration.mark({ class: className, attributes: { "data-sm-id": a.id } }).range(a.from, a.to));
+      if (insert) {
+        const active = a.id === this.activeId;
+        ranges.push(Decoration.widget({ widget: new ReplacementWidget(a.id, insert, active), side: 1 }).range(a.to));
+      }
     }
-    return builder.finish();
+    return Decoration.set(ranges, true);
   }
 
   /** Live Preview renders tables as widgets that swallow mark decorations, so those highlights are drawn into the DOM directly. */
@@ -297,8 +354,11 @@ export class AnchorTracker {
       key: "sm-table-highlight",
       read: () => null,
       write: () => {
-        const text = this.view.state.doc.toString();
-        applyTableHighlights(this.view, this.anchors, text, text.length, (id) => void this.host.openSidebar(id));
+        const doc = this.view.state.doc;
+        const text = doc.toString();
+        applyTableHighlights(this.view, this.anchors, text, text.length, (id) => void this.host.openSidebar(id), (a) =>
+          this.styleOf(a, doc)
+        );
       },
     });
   }
@@ -309,7 +369,7 @@ export function buildEditorExtension(host: EditorHost) {
     decorations: (tracker) => tracker.decorations,
     eventHandlers: {
       mousedown(event: MouseEvent) {
-        const target = event.target instanceof Element ? event.target.closest(".sm-highlight") : null;
+        const target = event.target instanceof Element ? event.target.closest(".sm-highlight, .sm-suggestion-insert") : null;
         const id = target?.getAttribute("data-sm-id");
         if (id) void host.openSidebar(id);
         return false;
