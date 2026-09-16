@@ -353,3 +353,104 @@
 .sm-suggestion-tooltip button:last-child:hover {
   color: var(--color-red, #e5534b);
 }
+
+/* ── Compact cards ─────────────────────────────────────────
+   Every card is rendered in full; unless it's expanded (selected, or holding
+   unsent text), only its header, a one-line quote and a two-line summary show. */
+.sm-card:not(.sm-expanded) .sm-full-only,
+.sm-card.sm-expanded .sm-compact-only {
+  display: none;
+}
+
+.sm-card:not(.sm-expanded) {
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+
+.sm-card-header {
+  align-items: center;
+  min-height: 24px;
+}
+
+.sm-card-header .sm-ts {
+  white-space: nowrap;
+}
+
+.sm-card:not(.sm-expanded):not(:hover):not(:focus-within) .sm-card-header .sm-entry-controls {
+  visibility: hidden;
+}
+
+.sm-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--text-faint);
+}
+
+.sm-badge svg,
+.sm-badge-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.sm-badge-icon {
+  display: inline-flex;
+}
+
+.sm-badge-warning {
+  color: var(--text-warning);
+}
+
+.sm-quote {
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
+.sm-card:not(.sm-expanded) .sm-quote {
+  display: block;
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sm-card:not(.sm-expanded) .sm-root-entry {
+  margin: 2px 0 0;
+}
+
+.sm-card:not(.sm-expanded) .sm-root-entry .sm-text,
+.sm-card:not(.sm-expanded) .sm-suggestion-diff {
+  max-height: calc(2 * var(--line-height-normal, 1.5) * 1em);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent);
+  mask-image: linear-gradient(to bottom, black 60%, transparent);
+}
+
+.sm-card:not(.sm-expanded) .sm-root-entry .sm-text > :first-child {
+  margin-top: 0;
+}
+
+.sm-card:not(.sm-expanded) .sm-suggestion-diff {
+  margin: 2px 0 0;
+  padding: 0;
+  background: none;
+}
+
+/* Resolved threads collapse to their header and one line of text. */
+.sm-card.sm-resolved:not(.sm-expanded) .sm-quote,
+.sm-card.sm-resolved.sm-suggestion-card:not(.sm-expanded) .sm-root-entry {
+  display: none;
+}
+
+.sm-card.sm-resolved:not(.sm-expanded) .sm-root-entry .sm-text,
+.sm-card.sm-resolved:not(.sm-expanded) .sm-suggestion-diff {
+  max-height: calc(var(--line-height-normal, 1.5) * 1em);
+  -webkit-mask-image: none;
+  mask-image: none;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
