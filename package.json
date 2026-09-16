@@ -2,7 +2,7 @@
   "name": "obsidian-sidemark",
   "version": "0.0.1",
   "private": true,
-  "description": "Comments and edit suggestions for Obsidian notes, stored in MRSF (Sidemark) sidecar files",
+  "description": "Google Docs-style comments and suggested edits, kept in Sidemark (MRSF) .review.yaml sidecars so your Markdown stays clean.",
   "main": "main.js",
   "type": "module",
   "license": "MIT",
