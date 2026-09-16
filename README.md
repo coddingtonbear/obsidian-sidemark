@@ -1,7 +1,7 @@
 # Sidemark for Obsidian
 
 > [!NOTE]
-> Sidemark is an unofficial fork of [Tandem Comments](https://github.com/leonpawelzik/obsidian-tandem-comments) by Leon Pawelzik. Its editor experience (highlights, the comment sidebar, suggestions, table support, and settings) is Tandem Comments' work; the git history before the fork is theirs. Sidemark changes where comments are stored: instead of a block inside each note, it uses [MRSF](https://github.com/wictorwilen/MRSF) sidecar files. If you're happy with comments stored inside your notes, use Tandem Comments.
+> Sidemark is an unofficial fork of [Leon Pawelzik](https://github.com/leonpawelzik)'s [Tandem Comments](https://github.com/leonpawelzik/obsidian-tandem-comments), and would not have been possible without it. Sidemark changes where comments are stored: instead of a block inside each note, it uses [MRSF sidecar files](https://github.com/wictorwilen/MRSF). If you're happy with comments stored inside your notes, use Tandem Comments.
 
 Comments and edit suggestions for Obsidian notes, stored **next to** each note instead of inside it.
 
