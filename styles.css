@@ -500,3 +500,12 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+
+/* A reply box shows its buttons only while it's focused or holds text. */
+.sm-reply-box:not(:focus-within) .sm-actions {
+  display: none;
+}
+
+.sm-card.sm-has-input .sm-reply-box .sm-actions {
+  display: flex;
+}

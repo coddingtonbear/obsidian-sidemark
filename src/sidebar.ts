@@ -263,10 +263,27 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     return [...items].sort((a, b) => direction * (threadActivity(a.thread) - threadActivity(b.thread)));
   }
 
-  private submitHint(action: string): string {
-    return this.plugin.settings.submitShortcut === "enter"
-      ? `(Enter = ${action}, Esc = cancel)`
-      : `(Cmd/Ctrl+Enter = ${action}, Esc = cancel)`;
+  /** The keyboard shortcut for a submit button, shown in its tooltip. */
+  private submitShortcutLabel(): string {
+    return this.plugin.settings.submitShortcut === "enter" ? "Enter" : "Cmd/Ctrl+Enter";
+  }
+
+  /** Submit and Cancel buttons under a text box; they don't take focus away from it. */
+  private addSubmitButtons(
+    container: HTMLElement,
+    submitLabel: string,
+    onSubmit: () => void,
+    onCancel: () => void
+  ): { actions: HTMLElement; submit: HTMLButtonElement } {
+    const actions = container.createDiv({ cls: "sm-actions" });
+    const submit = actions.createEl("button", { text: submitLabel, cls: "mod-cta" });
+    setTooltip(submit, `${submitLabel} (${this.submitShortcutLabel()})`);
+    const cancel = actions.createEl("button", { text: "Cancel" });
+    setTooltip(cancel, "Cancel (Esc)");
+    for (const button of [submit, cancel]) button.addEventListener("mousedown", (e) => e.preventDefault());
+    submit.onclick = onSubmit;
+    cancel.onclick = onCancel;
+    return { actions, submit };
   }
 
   private shouldSubmit(event: KeyboardEvent): boolean {
@@ -288,26 +305,30 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     }
     const input = card.createEl("textarea", {
       cls: "sm-input",
-      attr: { placeholder: `Comment… ${this.submitHint("save")}`, rows: "3", "aria-label": "New comment" },
+      attr: { placeholder: "Comment…", rows: "3", "aria-label": "New comment" },
     });
     window.setTimeout(() => input.focus(), 0);
     let saving = false;
+    const save = (): void => {
+      const text = input.value.trim();
+      if (!text || saving) return;
+      saving = true;
+      void this.plugin
+        .updateComments(file, (doc) => addComment(doc, this.plugin.newEntry(text), draft.anchor))
+        .then((ok) => {
+          saving = false;
+          if (!ok) return;
+          input.value = "";
+          this.cancelDraft();
+        });
+    };
+    this.addSubmitButtons(card, "Comment", save, () => this.cancelDraft());
     input.onkeydown = (e) => {
       if (e.key === "Escape") {
         this.cancelDraft();
       } else if (this.shouldSubmit(e)) {
         e.preventDefault();
-        const text = input.value.trim();
-        if (!text || saving) return;
-        saving = true;
-        void this.plugin
-          .updateComments(file, (doc) => addComment(doc, this.plugin.newEntry(text), draft.anchor))
-          .then((ok) => {
-            saving = false;
-            if (!ok) return;
-            input.value = "";
-            this.cancelDraft();
-          });
+        save();
       }
     };
   }
@@ -335,7 +356,9 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     });
     const actions = card.createDiv({ cls: "sm-actions" });
     const save = actions.createEl("button", { text: "Add suggestion", cls: "mod-cta" });
+    setTooltip(save, `Add suggestion (${this.submitShortcutLabel()})`);
     const cancel = actions.createEl("button", { text: "Cancel" });
+    setTooltip(cancel, "Cancel (Esc)");
 
     const submit = (): void => {
       if (save.disabled) return;
@@ -629,31 +652,39 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     }
 
     if (isOpen) {
-      const reply = details.createEl("textarea", {
+      // The buttons show once the box is in use (see .sm-reply-box in styles.css).
+      const box = details.createDiv({ cls: "sm-reply-box" });
+      const reply = box.createEl("textarea", {
         cls: "sm-input",
-        attr: { placeholder: `Reply… ${this.submitHint("send")}`, rows: "2", "aria-label": "Reply" },
+        attr: { placeholder: "Reply…", rows: "2", "aria-label": "Reply" },
       });
+      const cancel = (): void => {
+        reply.value = "";
+        this.setPendingInput(card, false);
+        reply.blur();
+      };
+      const send = (): void => {
+        const text = reply.value.trim();
+        if (!text || reply.disabled) return;
+        reply.disabled = true;
+        void this.plugin
+          .updateComments(file, (doc) => addReply(doc, root.id, this.plugin.newEntry(text)))
+          .then((ok) => {
+            reply.disabled = false;
+            if (!ok) return;
+            reply.value = "";
+            this.setPendingInput(card, false);
+            // The render triggered by the save was skipped while the reply was still in the box.
+            this.requestRender(false);
+          });
+      };
+      this.addSubmitButtons(box, "Reply", send, cancel);
       reply.addEventListener("input", () => this.setPendingInput(card, reply.value.length > 0));
       reply.onkeydown = (e) => {
-        if (e.key === "Escape") {
-          reply.value = "";
-          this.setPendingInput(card, false);
-          reply.blur();
-        } else if (this.shouldSubmit(e)) {
+        if (e.key === "Escape") cancel();
+        else if (this.shouldSubmit(e)) {
           e.preventDefault();
-          const text = reply.value.trim();
-          if (!text || reply.disabled) return;
-          reply.disabled = true;
-          void this.plugin
-            .updateComments(file, (doc) => addReply(doc, root.id, this.plugin.newEntry(text)))
-            .then((ok) => {
-              reply.disabled = false;
-              if (!ok) return;
-              reply.value = "";
-              this.setPendingInput(card, false);
-              // The render triggered by the save was skipped while the reply was still in the box.
-              this.requestRender(false);
-            });
+          send();
         }
       };
     }
@@ -718,7 +749,9 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       textEl.replaceWith(input);
       const editActions = row.createDiv({ cls: "sm-actions sm-edit-actions" });
       const save = editActions.createEl("button", { text: "Save", cls: "mod-cta" });
+      setTooltip(save, `Save (${this.submitShortcutLabel()})`);
       const cancel = editActions.createEl("button", { text: "Cancel" });
+      setTooltip(cancel, "Cancel (Esc)");
       const submit = (): void => {
         if (save.disabled) return;
         const next = input.value.trim();
