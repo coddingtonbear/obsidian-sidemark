@@ -220,8 +220,6 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       cls: "sm-toggle",
     });
     toggle.onclick = () => this.toggleResolved();
-    const exportBtn = header.createEl("button", { text: "Export", cls: "sm-toggle" });
-    exportBtn.onclick = () => void this.plugin.exportComments(file);
 
     if (this.draft && this.draft.filePath === file.path) this.renderDraft(container, file, this.draft);
     else this.draft = null;
