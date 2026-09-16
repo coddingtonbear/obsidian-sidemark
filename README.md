@@ -1,7 +1,7 @@
 # Sidemark for Obsidian
 
 > [!NOTE]
-> Sidemark is an unofficial fork of [Tandem Comments](https://github.com/leonpawelzik/obsidian-tandem-comments) by Leon Pawelzik. Its editor experience (highlights, the comment sidebar, suggestions, table support, and settings) is Tandem Comments' work; the git history before the fork is theirs. Sidemark changes where comments are stored: instead of a block inside each note, it uses [MRSF](https://github.com/wictorwilen/MRSF) sidecar files. If you're happy with comments stored inside your notes, use Tandem Comments.
+> Sidemark is an unofficial fork of [Leon Pawelzik](https://github.com/leonpawelzik)'s [Tandem Comments](https://github.com/leonpawelzik/obsidian-tandem-comments), and would not have been possible without it. Sidemark changes where comments are stored: instead of a block inside each note, it uses [MRSF sidecar files](https://github.com/wictorwilen/MRSF). If you're happy with comments stored inside your notes, use Tandem Comments.
 
 Comments and edit suggestions for Obsidian notes, stored **next to** each note instead of inside it.
 
@@ -13,13 +13,14 @@ Because the sidecars are standard MRSF, the same comments work with the [Sidemar
 
 - Comment on any selected text, reply in threads, then resolve or reopen them.
 - Suggest an edit (a replacement for the selected text), then accept or decline it. Accepting rewrites the passage in the note.
+- Open suggestions are shown in the note itself: only the words that would change are struck through, with the new words right after them (this can be turned off in settings). The sidebar card, and the preview while you write a suggestion, show the change the same way.
 - Highlights follow the text as you type, including inside tables. Updated positions are saved to the sidecar automatically.
 - **Drift:** when the commented text itself is edited, the sidebar shows what it now reads. MRSF keeps the reviewer's original selection in `selected_text` and the current text in `anchored_text`.
 - **Orphans:** comments whose passage was deleted are listed as orphaned, and "Re-anchor to selection" attaches them to new text.
 - **Outside edits:** changes to the note or its sidecar made outside Obsidian (sync, git, an AI assistant, the `mrsf` tool) are picked up live.
 - **Renames and deletes:** renaming or moving a note moves its sidecar and updates its `document` field; renaming a folder is handled too. Deleting a note moves its sidecar to the trash with it.
 - Comment text is rendered as Markdown, so `[[wikilinks]]` work and show hover previews.
-- Commands to export a note's comments to a new note, and to remove resolved threads.
+- Commands to remove resolved threads, and to export a note's comments to `<Note> – Comments.md` next to it. The export opens in a new tab; exporting again replaces the previous export.
 - **Tandem Comments conversion:** a button in settings (also available as a command) converts every note's `tandem-comments` block into a sidecar.
 
 ## Installing (manually, for now)
@@ -33,10 +34,13 @@ If you use Obsidian Sync, turn on syncing of "other file types" so the `.review.
 ## Using it
 
 - **Add a comment:** select text, then use *Add comment* from the right-click menu or the command palette. Type in the sidebar and press Enter.
-- **Suggest an edit:** select text, then use *Suggest edit*. Edit the proposed replacement and optionally explain why.
+- **Suggest an edit:** select text, then use *Suggest edit*. Edit the proposed replacement and optionally explain why. Clear the replacement to suggest deleting the text.
+- **Review suggestions from the note:** hover over a suggestion for ✓ (accept) and ✕ (decline) buttons. The commands *Accept suggestion at cursor*, *Decline suggestion at cursor*, *Go to next suggestion* and *Go to previous suggestion* can be bound to hotkeys.
+- **Compact threads:** the panel shows each thread briefly: author, time, a line of the quoted text and the start of the comment. Selecting a thread (click it, or put the cursor in its passage) expands it to show its replies and the reply box; Esc collapses it. A thread with an unsent reply stays expanded.
+- **Resolve and decide:** each card's actions sit in its top-right corner (shown on hover until the card is selected): ✓ resolves a comment or accepts a suggestion, ✕ declines a suggestion, and ↺ reopens a resolved thread.
 - **Open a thread:** click a highlight to open its thread; click the quote in the sidebar to jump to the passage.
 - **Edit your own text:** double-click a comment's text to edit it. The `…` menu copies or deletes a comment.
-- **Undoing an accepted suggestion:** Undo restores the note's text, but the suggestion stays marked accepted. Use *Show resolved* → *Reopen* to act on it again.
+- **Undoing an accepted suggestion:** Undo restores the note's text, but the suggestion stays marked accepted. Use *Show resolved*, then the ↺ (Reopen) button on its card, to act on it again.
 
 ## The file format
 
@@ -44,8 +48,8 @@ Sidecars follow MRSF v1.0. Sidemark adds a few extension fields, which MRSF tool
 
 | Field | Meaning |
 | --- | --- |
-| `x_prefix` / `x_suffix` | Up to 20 characters around the quote, used to tell identical quotes apart. |
-| `x_suggestion` | `{ replacement, result? }` on a root comment with `type: suggestion`. The root's `text` is the optional explanation; `result` is `accepted` or `declined` once decided. |
+| `x_prefix` / `x_suffix` | Up to 20 characters before and after the quote, used to tell identical quotes apart. Together with `selected_text`, these match the `prefix`, `exact` and `suffix` of a [W3C TextQuoteSelector](https://www.w3.org/TR/annotation-model/#text-quote-selector), the quote anchoring Tandem Comments uses. |
+| `x_suggestion` | `{ replacement, result? }` on a root comment with `type: suggestion`. An empty `replacement` suggests deleting the passage. The root's `text` is the optional explanation; `result` is `accepted` or `declined` once decided. |
 | `x_tandem_id` | The original ID of a comment converted from Tandem Comments. |
 
 An example:

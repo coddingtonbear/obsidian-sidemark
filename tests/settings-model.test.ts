@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, parseSettings, shouldSubmitComment } from "../src/settings-model";
+import { DEFAULT_SETTINGS, parseSettings, settingsEffects, shouldSubmitComment } from "../src/settings-model";
 
 describe("parseSettings", () => {
   it("fills in defaults for missing or invalid values", () => {
@@ -17,6 +17,15 @@ describe("parseSettings", () => {
       resolveBehavior: "remove",
       timestampDisplay: "relative",
     });
+  });
+});
+
+describe("settingsEffects", () => {
+  it("rebuilds editor decorations when inline suggestions are toggled", () => {
+    const off = parseSettings({ showSuggestionsInline: false });
+    expect(off.showSuggestionsInline).toBe(false);
+    expect(settingsEffects(DEFAULT_SETTINGS, off).refreshEditors).toBe(true);
+    expect(settingsEffects(DEFAULT_SETTINGS, { ...DEFAULT_SETTINGS, colorAuthorNames: false }).refreshEditors).toBe(false);
   });
 });
 

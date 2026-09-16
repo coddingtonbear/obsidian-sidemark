@@ -45,3 +45,20 @@ export function formatSidebarTimestamp(
     unit
   );
 }
+
+/** A very short time for compact cards: "now", "5m", "3h", "2d", then a date ("Aug 11", or "Aug 11, 2025" in another year). */
+export function shortTimestamp(timestamp: string, options: TimestampFormatOptions = {}): string {
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return timestamp;
+  const now = options.now ?? new Date();
+  const seconds = (now.getTime() - date.getTime()) / 1000;
+  if (seconds >= 0 && seconds < 60) return "now";
+  if (seconds >= 0 && seconds < 3_600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds >= 0 && seconds < 86_400) return `${Math.floor(seconds / 3_600)}h`;
+  if (seconds >= 0 && seconds < 7 * 86_400) return `${Math.floor(seconds / 86_400)}d`;
+  return new Intl.DateTimeFormat(options.locale, {
+    month: "short",
+    day: "numeric",
+    ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  }).format(date);
+}

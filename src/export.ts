@@ -1,5 +1,5 @@
 import type { Resolution } from "./anchoring";
-import { type Comment, suggestionOf, type Thread } from "./model";
+import { type Comment, isResolved, suggestionOf, type Thread } from "./model";
 
 export function formatTs(ts: string): string {
   const d = new Date(ts);
@@ -25,8 +25,11 @@ export function formatThread(thread: Thread, includeQuote: boolean): string {
   if (includeQuote && root.selected_text) parts.push(quote(root.selected_text));
   if (suggestion) {
     const outcome = suggestion.result ? ` — ${suggestion.result}` : "";
+    const byline = `by ${String(root.author)}** (${formatTs(String(root.timestamp))})${outcome}`;
     parts.push(
-      `**Suggested edit by ${String(root.author)}** (${formatTs(String(root.timestamp))})${outcome}:\n${quote(suggestion.replacement)}`
+      suggestion.replacement === ""
+        ? `**Suggested deletion ${byline}`
+        : `**Suggested edit ${byline}:\n${quote(suggestion.replacement)}`
     );
   }
   const entries = [...(suggestion && !root.text ? [] : [root]), ...thread.replies].map(entryLine);
@@ -43,10 +46,10 @@ export interface ResolvedThread {
 export function buildExportNote(sourceName: string, threads: ResolvedThread[], date: string): string | null {
   const startOf = (t: ResolvedThread) => (t.resolution.kind === "resolved" ? t.resolution.from : 0);
   const open = threads
-    .filter((t) => !t.thread.root.resolved && t.resolution.kind === "resolved")
+    .filter((t) => !isResolved(t.thread.root) && t.resolution.kind === "resolved")
     .sort((a, b) => startOf(a) - startOf(b));
-  const orphans = threads.filter((t) => !t.thread.root.resolved && t.resolution.kind === "orphaned");
-  const done = threads.filter((t) => t.thread.root.resolved);
+  const orphans = threads.filter((t) => !isResolved(t.thread.root) && t.resolution.kind === "orphaned");
+  const done = threads.filter((t) => isResolved(t.thread.root));
   if (!open.length && !orphans.length && !done.length) return null;
   const format = (t: ResolvedThread) => formatThread(t.thread, true);
   const sections = [`Exported from [[${sourceName}]] on [[${date}]].`];

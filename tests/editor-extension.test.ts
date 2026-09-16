@@ -51,6 +51,7 @@ class Harness {
   readonly store = new SidecarStore(this.io);
   readonly tracker: AnchorTracker;
   readonly threadAtCursor = vi.fn();
+  inline = true;
   file: NonNullable<MockFileInfo["file"]>;
 
   constructor(text: string, comments: Comment[], path = NOTE) {
@@ -72,6 +73,8 @@ class Harness {
       registerTracker: () => () => undefined,
       anchorsChanged: vi.fn(),
       threadAtCursor: this.threadAtCursor,
+      showSuggestionsInline: () => harness.inline,
+      decideSuggestion: vi.fn(),
     };
     this.tracker = new AnchorTracker(view as unknown as EditorView, host);
   }
@@ -119,6 +122,18 @@ class Harness {
 
   sidecar(path = NOTE): MrsfDocument {
     return parseSidecarContent(this.io.files.get(`${path}.review.yaml`) ?? "");
+  }
+
+  /** Each decoration as [text it covers or widget text, classes]. */
+  decorated(): [string, string][] {
+    const out: [string, string][] = [];
+    const iter = this.tracker.decorations.iter();
+    for (; iter.value; iter.next()) {
+      const spec = iter.value.spec as { class?: string; widget?: { text: string } };
+      if (spec.widget) out.push([`+${spec.widget.text}`, "widget"]);
+      else out.push([this.text().slice(iter.from, iter.to), spec.class ?? ""]);
+    }
+    return out;
   }
 
   highlighted(): string[] {
@@ -263,6 +278,17 @@ describe("AnchorTracker", () => {
     vi.advanceTimersByTime(1000);
     await settle();
     expect(h.sidecar().comments[0].line).toBeUndefined();
+    expect(h.tracker.isAmbiguous("a")).toBe(true);
+  });
+
+  it("stops treating a quote as ambiguous once it's re-targeted", async () => {
+    const text = "fox one\nfox two\n";
+    const comment: Comment = { id: "a", author: "A", timestamp: ts, text: "x", resolved: false, selected_text: "fox" };
+    const h = new Harness(text, [comment]);
+    await settle();
+    await h.store.update(NOTE, (doc) => retarget(doc, "a", anchorFieldsFor(text, 8, 11)));
+    await settle();
+    expect(h.tracker.isAmbiguous("a")).toBe(false);
   });
 
   it("announces the thread under the cursor and marks its highlight active", async () => {
@@ -285,15 +311,116 @@ describe("AnchorTracker", () => {
     expect(h.threadAtCursor).toHaveBeenCalledTimes(4);
   });
 
+  it("shows a thread selected in the sidebar as active until the cursor moves", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a"), commentOn(TEXT, "Second", "b")]);
+    await settle();
+    h.threadAtCursor.mockClear();
+    h.tracker.showThread("b");
+    expect(h.decorated()).toEqual([
+      ["quick brown", "sm-highlight"],
+      ["Second", "sm-highlight sm-highlight-active"],
+    ]);
+    // Other changes (e.g. a reply being saved) don't clear it or announce anything.
+    await h.store.update(NOTE, (doc) => {
+      doc.comments.push({ id: "r", author: "A", timestamp: ts, text: "reply", resolved: false, reply_to: "b" });
+    });
+    await settle();
+    h.insert(0, "x");
+    expect(h.decorated()[1][1]).toContain("sm-highlight-active");
+    expect(h.threadAtCursor).not.toHaveBeenCalled();
+    // Moving the cursor takes over again.
+    h.apply({ selection: { anchor: h.text().indexOf("quick") + 1 } });
+    expect(h.decorated()[0][1]).toContain("sm-highlight-active");
+    expect(h.threadAtCursor).toHaveBeenLastCalledWith(NOTE, "a");
+    h.tracker.showThread(null);
+    expect(h.decorated().some(([, cls]) => cls.includes("active"))).toBe(false);
+  });
+
   it("marks suggestion highlights differently", async () => {
     const suggestion = { ...commentOn(TEXT, "Second", "s"), type: "suggestion", x_suggestion: { replacement: "2nd" } };
     const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a"), suggestion]);
+    h.inline = false;
     await settle();
-    const classes: string[] = [];
-    h.tracker.decorations.between(0, h.text().length, (_from, _to, deco) => {
-      classes.push(String(deco.spec.class));
-    });
-    expect(classes).toEqual(["sm-highlight", "sm-highlight sm-highlight-suggestion"]);
+    h.tracker.refresh();
+    expect(h.decorated()).toEqual([
+      ["quick brown", "sm-highlight"],
+      ["Second", "sm-highlight sm-highlight-suggestion"],
+    ]);
+  });
+
+  it("shows an open suggestion in the note by striking out the changed words and adding the new ones", async () => {
+    const suggestion = { ...commentOn(TEXT, "quick brown", "s"), type: "suggestion", x_suggestion: { replacement: "slow brown" } };
+    const h = new Harness(TEXT, [suggestion]);
+    await settle();
+    expect(h.decorated()).toEqual([
+      ["quick", "sm-suggestion-strike"],
+      ["quick brown", "sm-highlight sm-highlight-suggestion sm-suggestion-inline"],
+      ["+slow", "widget"],
+    ]);
+  });
+
+  it("shows a suggested deletion as struck-out text alone", async () => {
+    const suggestion = { ...commentOn(TEXT, "Second", "s"), type: "suggestion", x_suggestion: { replacement: "" } };
+    const h = new Harness(TEXT, [suggestion]);
+    await settle();
+    expect(h.decorated()).toEqual([
+      ["Second", "sm-suggestion-strike"],
+      ["Second", "sm-highlight sm-highlight-suggestion sm-suggestion-inline"],
+    ]);
+  });
+
+  it("falls back to a plain suggestion highlight once the passage has changed", async () => {
+    const suggestion = { ...commentOn(TEXT, "quick brown", "s"), type: "suggestion", x_suggestion: { replacement: "slow" } };
+    const h = new Harness(TEXT, [suggestion]);
+    await settle();
+    h.apply({ changes: { from: TEXT.indexOf("quick"), to: TEXT.indexOf("quick") + 5, insert: "QUICK" } });
+    expect(h.decorated()).toEqual([["QUICK brown", "sm-highlight sm-highlight-suggestion"]]);
+  });
+
+  it("finds the open suggestion at a position, skipping plain comments and decided suggestions", async () => {
+    const open = { ...commentOn(TEXT, "quick brown fox", "s"), type: "suggestion", x_suggestion: { replacement: "cat" } };
+    const inner = { ...commentOn(TEXT, "brown", "t"), type: "suggestion", x_suggestion: { replacement: "red" } };
+    const decided = { ...commentOn(TEXT, "Second", "d"), type: "suggestion", x_suggestion: { replacement: "2nd", result: "declined" } };
+    const h = new Harness(TEXT, [open, inner, decided, commentOn(TEXT, "Title", "c")]);
+    await settle();
+    expect(h.tracker.openSuggestions().map((a) => a.id)).toEqual(["s", "t"]);
+    expect(h.tracker.suggestionAt(TEXT.indexOf("quick"))?.id).toBe("s");
+    expect(h.tracker.suggestionAt(TEXT.indexOf("brown") + 2)?.id).toBe("t");
+    expect(h.tracker.suggestionAt(TEXT.indexOf(" jumps"))?.id).toBe("s");
+    expect(h.tracker.suggestionAt(TEXT.indexOf("Title"))).toBeNull();
+    expect(h.tracker.suggestionAt(TEXT.indexOf("Second"))).toBeNull();
+  });
+
+  it("doesn't track a suggestion that records an outcome, even if it isn't marked resolved", async () => {
+    const suggestion = { ...commentOn(TEXT, "Second", "s"), type: "suggestion", x_suggestion: { replacement: "2nd", result: "accepted" } };
+    const h = new Harness(TEXT, [suggestion]);
+    await settle();
+    expect(h.decorated()).toEqual([]);
+  });
+
+  it("tells CodeMirror how many lines a multi-line replacement takes", async () => {
+    const suggestion = { ...commentOn(TEXT, "Second", "s"), type: "suggestion", x_suggestion: { replacement: "Two\nlines\nhere" } };
+    const h = new Harness(TEXT, [suggestion]);
+    await settle();
+    const widgets: number[] = [];
+    const iter = h.tracker.decorations.iter();
+    for (; iter.value; iter.next()) {
+      const widget = (iter.value.spec as { widget?: { lineBreaks: number } }).widget;
+      if (widget) widgets.push(widget.lineBreaks);
+    }
+    expect(widgets).toEqual([2]);
+  });
+
+  it("doesn't preview a decided suggestion", async () => {
+    const suggestion = {
+      ...commentOn(TEXT, "Second", "s"),
+      resolved: true,
+      type: "suggestion",
+      x_suggestion: { replacement: "2nd", result: "declined" },
+    };
+    const h = new Harness(TEXT, [suggestion]);
+    await settle();
+    expect(h.decorated()).toEqual([]);
   });
 
   it("follows a renamed note", async () => {

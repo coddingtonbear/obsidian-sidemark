@@ -35,6 +35,16 @@ describe("formatThread", () => {
     expect(out).toContain("— accepted:\n> new");
     expect(out).not.toContain("**Claude** (");
   });
+
+  it("shows a suggested deletion without an empty replacement quote", () => {
+    const deletion: Thread = {
+      root: { ...suggestion.root, resolved: false, x_suggestion: { replacement: "" } },
+      replies: [],
+    };
+    const out = formatThread(deletion, true);
+    expect(out).toContain("> old\n\n**Suggested deletion by Claude**");
+    expect(out).not.toContain(":\n>");
+  });
 });
 
 describe("buildExportNote", () => {

@@ -16,7 +16,7 @@ import { resolveAuthorColor } from "./author-color";
 import { confirmAction } from "./confirm-action";
 import { formatThread, formatTs, type ResolvedThread } from "./export";
 import type SidemarkPlugin from "./main";
-import { type Comment, suggestionOf, threadActivity } from "./model";
+import { type Comment, isResolved, suggestionOf, threadActivity } from "./model";
 import {
   type AnchorFields,
   addComment,
@@ -25,14 +25,14 @@ import {
   deleteComment,
   deleteThread,
   editText,
-  finishSuggestion,
   reopenSuggestion,
   retarget,
   setThreadResolved,
   type SuggestionFailure,
 } from "./mutations";
 import { shouldSubmitComment } from "./settings-model";
-import { formatSidebarTimestamp } from "./timestamp";
+import { formatSidebarTimestamp, shortTimestamp } from "./timestamp";
+import { wordDiff } from "./word-diff";
 
 export const VIEW_TYPE_SIDEMARK = "sidemark-sidebar";
 
@@ -46,12 +46,23 @@ function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + "…";
 }
 
-export function suggestionFailureMessage(reason: SuggestionFailure | "no-editor" | "orphaned" | "changed"): string {
+/** Renders `before` → `after` as one passage with the changed words struck out or marked as added. */
+function renderDiff(el: HTMLElement, before: string, after: string): void {
+  el.empty();
+  for (const part of wordDiff(before, after)) {
+    const cls = part.kind === "same" ? undefined : part.kind === "del" ? "sm-diff-del" : "sm-diff-ins";
+    el.createSpan({ text: part.text, cls });
+  }
+}
+
+export function suggestionFailureMessage(reason: SuggestionFailure | "no-editor" | "orphaned" | "changed" | "ambiguous"): string {
   switch (reason) {
     case "no-editor":
       return "Open this note in an editor before accepting the suggestion.";
     case "orphaned":
       return "The original passage no longer exists. Re-anchor the suggestion before accepting it.";
+    case "ambiguous":
+      return "This passage appears more than once in the note. Re-anchor the suggestion before accepting it.";
     case "changed":
       return "The passage has changed since the suggestion was made. Re-anchor it before accepting.";
     case "invalid-suggestion":
@@ -103,11 +114,13 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
         if (change.notePath === this.app.workspace.getActiveFile()?.path) this.requestRender(false);
       })
     );
-    this.registerInterval(
-      window.setInterval(() => {
-        if (this.plugin.settings.timestampDisplay === "relative") this.refreshTimestamps();
-      }, 60_000)
-    );
+    this.registerInterval(window.setInterval(() => this.refreshTimestamps(), 60_000));
+    this.registerDomEvent(this.contentEl, "keydown", (e) => {
+      if (e.key !== "Escape" || (e.target instanceof Element && e.target.closest("textarea, input"))) return;
+      this.clearFocus();
+      const file = this.app.workspace.getActiveFile();
+      if (file) this.plugin.showThreadInEditor(file, null);
+    });
     this.requestRender(true);
   }
 
@@ -127,7 +140,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     const card = this.applyFocus();
     if (!scroll) return;
     if (card) {
-      card.scrollIntoView({ block: "nearest" });
+      card.scrollIntoView({ block: "nearest", behavior: "smooth" });
     } else {
       this.pendingScrollId = id;
       this.requestRender(true);
@@ -146,6 +159,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     for (const card of Array.from(this.contentEl.querySelectorAll<HTMLElement>(".sm-card[data-sm-id]"))) {
       const match = card.dataset.smId === this.focusedId;
       card.toggleClass("sm-focused", match);
+      this.setExpanded(card, match || card.hasClass("sm-has-input"));
       if (match) focused = card;
     }
     return focused;
@@ -211,15 +225,13 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       cls: "sm-toggle",
     });
     toggle.onclick = () => this.toggleResolved();
-    const exportBtn = header.createEl("button", { text: "Export", cls: "sm-toggle" });
-    exportBtn.onclick = () => void this.plugin.exportComments(file);
 
     if (this.draft && this.draft.filePath === file.path) this.renderDraft(container, file, this.draft);
     else this.draft = null;
 
-    const open = this.sorted(threads.filter((t) => !t.thread.root.resolved && t.resolution.kind === "resolved"));
-    const orphans = this.sorted(threads.filter((t) => !t.thread.root.resolved && t.resolution.kind === "orphaned"));
-    const done = this.sorted(threads.filter((t) => t.thread.root.resolved));
+    const open = this.sorted(threads.filter((t) => !isResolved(t.thread.root) && t.resolution.kind === "resolved"));
+    const orphans = this.sorted(threads.filter((t) => !isResolved(t.thread.root) && t.resolution.kind === "orphaned"));
+    const done = this.sorted(threads.filter((t) => isResolved(t.thread.root)));
 
     if (!open.length && !orphans.length && !(this.showResolved && done.length) && !this.draft) {
       container.createDiv({
@@ -253,10 +265,27 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     return [...items].sort((a, b) => direction * (threadActivity(a.thread) - threadActivity(b.thread)));
   }
 
-  private submitHint(action: string): string {
-    return this.plugin.settings.submitShortcut === "enter"
-      ? `(Enter = ${action}, Esc = cancel)`
-      : `(Cmd/Ctrl+Enter = ${action}, Esc = cancel)`;
+  /** The keyboard shortcut for a submit button, shown in its tooltip. */
+  private submitShortcutLabel(): string {
+    return this.plugin.settings.submitShortcut === "enter" ? "Enter" : "Cmd/Ctrl+Enter";
+  }
+
+  /** Submit and Cancel buttons under a text box; they don't take focus away from it. */
+  private addSubmitButtons(
+    container: HTMLElement,
+    submitLabel: string,
+    onSubmit: () => void,
+    onCancel: () => void
+  ): { actions: HTMLElement; submit: HTMLButtonElement } {
+    const actions = container.createDiv({ cls: "sm-actions" });
+    const submit = actions.createEl("button", { text: submitLabel, cls: "mod-cta" });
+    setTooltip(submit, `${submitLabel} (${this.submitShortcutLabel()})`);
+    const cancel = actions.createEl("button", { text: "Cancel" });
+    setTooltip(cancel, "Cancel (Esc)");
+    for (const button of [submit, cancel]) button.addEventListener("mousedown", (e) => e.preventDefault());
+    submit.onclick = onSubmit;
+    cancel.onclick = onCancel;
+    return { actions, submit };
   }
 
   private shouldSubmit(event: KeyboardEvent): boolean {
@@ -269,34 +298,39 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
   }
 
   private renderDraft(container: HTMLElement, file: TFile, draft: Draft): void {
-    const card = container.createDiv({ cls: "sm-card sm-draft" });
-    card.createDiv({ text: `"${truncate(draft.anchor.selected_text, 80)}"`, cls: "sm-quote" });
+    // A draft is always shown in full.
+    const card = container.createDiv({ cls: "sm-card sm-draft sm-expanded" });
+    card.createDiv({ text: draft.anchor.selected_text, cls: "sm-quote" });
     if (draft.kind === "suggestion") {
       this.renderSuggestionDraft(card, file, draft);
       return;
     }
     const input = card.createEl("textarea", {
       cls: "sm-input",
-      attr: { placeholder: `Comment… ${this.submitHint("save")}`, rows: "3", "aria-label": "New comment" },
+      attr: { placeholder: "Comment…", rows: "3", "aria-label": "New comment" },
     });
     window.setTimeout(() => input.focus(), 0);
     let saving = false;
+    const save = (): void => {
+      const text = input.value.trim();
+      if (!text || saving) return;
+      saving = true;
+      void this.plugin
+        .updateComments(file, (doc) => addComment(doc, this.plugin.newEntry(text), draft.anchor))
+        .then((ok) => {
+          saving = false;
+          if (!ok) return;
+          input.value = "";
+          this.cancelDraft();
+        });
+    };
+    this.addSubmitButtons(card, "Comment", save, () => this.cancelDraft());
     input.onkeydown = (e) => {
       if (e.key === "Escape") {
         this.cancelDraft();
       } else if (this.shouldSubmit(e)) {
         e.preventDefault();
-        const text = input.value.trim();
-        if (!text || saving) return;
-        saving = true;
-        void this.plugin
-          .updateComments(file, (doc) => addComment(doc, this.plugin.newEntry(text), draft.anchor))
-          .then((ok) => {
-            saving = false;
-            if (!ok) return;
-            input.value = "";
-            this.cancelDraft();
-          });
+        save();
       }
     };
   }
@@ -305,9 +339,18 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     card.createDiv({ text: "Suggested replacement", cls: "sm-field-label" });
     const replacement = card.createEl("textarea", {
       cls: "sm-input",
-      attr: { placeholder: "Replacement text…", rows: "3", "aria-label": "Suggested replacement" },
+      attr: { placeholder: "Leave empty to suggest deleting the text", rows: "3", "aria-label": "Suggested replacement" },
     });
     replacement.value = draft.anchor.selected_text;
+    const deletionHint = card.createDiv({ text: "This suggests deleting the selected text.", cls: "sm-field-hint" });
+    const preview = card.createDiv({ cls: "sm-suggestion-diff sm-draft-preview", attr: { "aria-label": "Preview of the change" } });
+    const updateHint = (): void => {
+      deletionHint.hidden = replacement.value.length > 0;
+      preview.hidden = replacement.value === draft.anchor.selected_text;
+      if (!preview.hidden) renderDiff(preview, draft.anchor.selected_text, replacement.value);
+    };
+    updateHint();
+    replacement.addEventListener("input", updateHint);
     card.createDiv({ text: "Explanation (optional)", cls: "sm-field-label" });
     const note = card.createEl("textarea", {
       cls: "sm-input",
@@ -315,15 +358,12 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     });
     const actions = card.createDiv({ cls: "sm-actions" });
     const save = actions.createEl("button", { text: "Add suggestion", cls: "mod-cta" });
+    setTooltip(save, `Add suggestion (${this.submitShortcutLabel()})`);
     const cancel = actions.createEl("button", { text: "Cancel" });
+    setTooltip(cancel, "Cancel (Esc)");
 
     const submit = (): void => {
       if (save.disabled) return;
-      if (replacement.value.length === 0) {
-        new Notice("Enter replacement text first.");
-        replacement.focus();
-        return;
-      }
       if (replacement.value === draft.anchor.selected_text) {
         new Notice("The replacement is identical to the original text.");
         replacement.focus();
@@ -385,6 +425,36 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     menu.showAtPosition({ x: rect.right, y: rect.bottom, left: true }, trigger.ownerDocument);
   }
 
+  /** A small icon button for a card's header. */
+  private addIconButton(
+    controls: HTMLElement,
+    options: { icon: string; label: string; cls?: string; unavailable?: string | null; run: (button: HTMLButtonElement) => void }
+  ): HTMLButtonElement {
+    const button = controls.createEl("button", {
+      cls: ["sm-entry-action", "clickable-icon", ...(options.cls ? [options.cls] : [])],
+      attr: { "aria-label": options.label },
+    });
+    setIcon(button, options.icon);
+    if (options.unavailable) {
+      // Not `disabled`: disabled buttons get no hover events, so the reason couldn't be shown.
+      button.addClass("sm-action-unavailable");
+      button.setAttr("aria-disabled", "true");
+      setTooltip(button, `${options.label}: ${options.unavailable}`);
+      button.onclick = () => new Notice(options.unavailable ?? "");
+    } else {
+      setTooltip(button, options.label);
+      button.onclick = () => options.run(button);
+    }
+    return button;
+  }
+
+  private reopenThread(file: TFile, root: Comment, isSuggestion: boolean): void {
+    void this.plugin.updateComments(file, (doc) => {
+      if (isSuggestion) reopenSuggestion(doc, root.id);
+      else setThreadResolved(doc, root.id, false);
+    });
+  }
+
   private addMenuTrigger(
     controls: HTMLElement,
     label: string,
@@ -424,22 +494,38 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     const { root } = thread;
     const suggestion = suggestionOf(root);
     const claimsSuggestion = root.x_suggestion !== undefined;
-    const isOpen = !root.resolved;
+    const isDeletion = suggestion?.replacement === "";
+    const isOpen = !isResolved(root);
+    const rootText = String(root.text ?? "");
     const cls = ["sm-card"];
-    if (root.resolved) cls.push("sm-resolved");
+    if (!isOpen) cls.push("sm-resolved");
     if (resolution.kind === "orphaned" && isOpen) cls.push("sm-orphan");
     if (claimsSuggestion) cls.push("sm-suggestion-card");
     if (resolution.kind === "resolved" && resolution.ambiguous) cls.push("sm-ambiguous");
+    if (root.id === this.focusedId) cls.push("sm-focused", "sm-expanded");
+    // Unselected cards are compact: CSS hides everything marked sm-full-only unless the card is expanded.
     const card = container.createDiv({ cls: cls.join(" ") });
     card.dataset.smId = root.id;
-    if (root.id === this.focusedId) card.addClass("sm-focused");
     if (root.id === this.pendingScrollId) {
       this.pendingScrollId = null;
       window.setTimeout(() => card.scrollIntoView({ block: "nearest" }), 0);
     }
+    const select = (): void => {
+      this.focusThread(root.id, false);
+      this.plugin.showThreadInEditor(file, root.id);
+    };
     card.addEventListener("click", (event) => {
       if (event.target instanceof Element && event.target.closest("button, textarea, a, input")) return;
-      this.focusThread(root.id, false);
+      select();
+    });
+    // Keyboard users select a card by focusing it and pressing Enter or Space.
+    card.tabIndex = 0;
+    card.setAttr("aria-expanded", String(root.id === this.focusedId));
+    card.setAttr("aria-label", `${claimsSuggestion ? "Suggestion" : "Comment"} by ${String(root.author)}`);
+    card.addEventListener("keydown", (event) => {
+      if (event.target !== card || (event.key !== "Enter" && event.key !== " ")) return;
+      event.preventDefault();
+      select();
     });
     const copyItem = {
       title: "Copy",
@@ -449,129 +535,189 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     const reveal = resolution.kind === "resolved" ? () => this.plugin.revealThread(file, root.id) : null;
     const quoteText = root.selected_text ?? "";
 
+    let warning: string | null = null;
+    if (isOpen && resolution.kind === "orphaned") {
+      warning = claimsSuggestion ? "Original passage not found." : "The commented passage can't be found.";
+    } else if (isOpen && resolution.kind === "resolved" && resolution.ambiguous) {
+      warning = "This passage appears more than once in the note.";
+    } else if (isOpen && claimsSuggestion && resolution.kind === "resolved" && resolution.fuzzy) {
+      warning = "The passage has changed since this suggestion was made.";
+    }
+
     if (claimsSuggestion) {
-      const heading = card.createDiv({ cls: "sm-suggestion-heading" });
-      heading.createSpan({ text: "Suggested edit", cls: "sm-suggestion-title" });
+      const heading = card.createDiv({ cls: "sm-suggestion-heading sm-collapse" });
+      heading.createSpan({ text: isDeletion ? "Suggested deletion" : "Suggested edit", cls: "sm-suggestion-title" });
       if (suggestion?.result) {
         heading.createSpan({
           text: suggestion.result === "accepted" ? "Accepted" : "Declined",
           cls: `sm-suggestion-result sm-suggestion-${suggestion.result}`,
         });
       }
-      const meta = card.createDiv({ cls: "sm-meta" });
-      this.paintAuthor(meta.createSpan({ text: String(root.author), cls: "sm-author" }), String(root.author));
-      this.addTimestamp(meta, String(root.timestamp));
-      const controls = meta.createDiv({ cls: "sm-entry-controls" });
-      this.addMenuTrigger(controls, "More options for suggestion", [
-        copyItem,
-        {
-          title: "Delete suggestion",
-          icon: "trash-2",
+    }
+
+    // Header: author, time, compact badges and the thread's actions.
+    const header = card.createDiv({ cls: "sm-meta sm-card-header" });
+    const author = String(root.author);
+    this.paintAuthor(header.createSpan({ text: author, cls: "sm-author" }), author);
+    this.addTimestamp(header, String(root.timestamp), "sm-full-only");
+    this.addShortTimestamp(header, String(root.timestamp));
+    if (thread.replies.length > 0) {
+      const count = header.createSpan({ cls: "sm-badge sm-compact-only" });
+      setIcon(count.createSpan({ cls: "sm-badge-icon" }), "message-square");
+      count.createSpan({ text: String(thread.replies.length) });
+      setTooltip(count, `${thread.replies.length} ${thread.replies.length === 1 ? "reply" : "replies"}`);
+    }
+    if (warning) {
+      const badge = header.createSpan({ cls: "sm-badge sm-badge-warning sm-compact-only" });
+      setIcon(badge, "alert-triangle");
+      setTooltip(badge, warning);
+    }
+    const controls = header.createDiv({ cls: "sm-entry-controls" });
+    const menuItems: { title: string; icon: string; warning?: boolean; run: () => void }[] = [copyItem];
+    if (claimsSuggestion) {
+      if (isOpen && suggestion && !suggestion.result) {
+        // Both buttons stay disabled while either decision is being saved.
+        const buttons: HTMLButtonElement[] = [];
+        const decide = (result: "accepted" | "declined") => () => {
+          for (const b of buttons) b.disabled = true;
+          void this.plugin.decideSuggestionIn(file, root.id, result).then((ok) => {
+            if (!ok) for (const b of buttons) b.disabled = false;
+          });
+        };
+        let unavailable: string | null = null;
+        if (resolution.kind === "orphaned") unavailable = suggestionFailureMessage("orphaned");
+        else if (resolution.ambiguous) unavailable = suggestionFailureMessage("ambiguous");
+        else if (resolution.fuzzy) unavailable = suggestionFailureMessage("changed");
+        buttons.push(
+          this.addIconButton(controls, { icon: "check", label: "Accept suggestion", cls: "sm-accept", unavailable, run: decide("accepted") }),
+          this.addIconButton(controls, { icon: "x", label: "Decline suggestion", cls: "sm-decline", run: decide("declined") })
+        );
+      } else if (!isOpen || suggestion?.result) {
+        this.addIconButton(controls, { icon: "rotate-ccw", label: "Reopen suggestion", run: () => this.reopenThread(file, root, true) });
+      }
+      if (rootText.length > 0) {
+        menuItems.push({
+          title: "Delete explanation",
+          icon: "eraser",
           warning: true,
           run: () =>
             void (async () => {
-              if (!(await this.confirmed("Delete suggestion?", "This permanently removes the suggestion and its discussion.", "Delete"))) return;
-              await this.plugin.updateComments(file, (doc) => deleteThread(doc, root.id));
+              if (!(await this.confirmed("Delete explanation?", "This permanently removes this entry.", "Delete"))) return;
+              await this.plugin.updateComments(file, (doc) => editText(doc, root.id, rootText, ""));
             })(),
-        },
-      ]);
-      const change = card.createDiv({ cls: "sm-suggestion-change" });
-      const original = change.createDiv({ text: quoteText, cls: "sm-suggestion-original" });
-      if (reveal) {
-        original.addClass("sm-quote-link");
-        original.onclick = reveal;
-      }
-      change.createDiv({ text: "↓", cls: "sm-suggestion-arrow", attr: { "aria-hidden": "true" } });
-      change.createDiv({
-        text: suggestion ? suggestion.replacement : "Invalid suggestion data",
-        cls: "sm-suggestion-replacement",
-      });
-      if (isOpen && resolution.kind === "orphaned") {
-        card.createDiv({ text: "Original passage not found.", cls: "sm-suggestion-warning" });
-      } else if (isOpen && resolution.kind === "resolved" && resolution.fuzzy) {
-        card.createDiv({
-          text: "The passage has changed since this suggestion was made.",
-          cls: "sm-suggestion-warning",
         });
       }
+      menuItems.push({
+        title: "Delete suggestion",
+        icon: "trash-2",
+        warning: true,
+        run: () =>
+          void (async () => {
+            if (!(await this.confirmed("Delete suggestion?", "This permanently removes the suggestion and its discussion.", "Delete"))) return;
+            await this.plugin.updateComments(file, (doc) => deleteThread(doc, root.id));
+          })(),
+      });
     } else {
-      const quote = card.createDiv({ text: `"${truncate(quoteText, 80)}"`, cls: "sm-quote" });
+      if (isOpen) {
+        this.addIconButton(controls, { icon: "check", label: "Resolve comment", cls: "sm-accept", run: () => this.resolveThread(file, root.id) });
+      } else {
+        this.addIconButton(controls, { icon: "rotate-ccw", label: "Reopen comment", run: () => this.reopenThread(file, root, false) });
+      }
+      menuItems.push({
+        title: "Delete comment",
+        icon: "trash-2",
+        warning: true,
+        run: () =>
+          void (async () => {
+            if (!(await this.confirmed("Delete comment?", "This permanently removes the comment and all of its replies.", "Delete"))) return;
+            await this.plugin.updateComments(file, (doc) => deleteThread(doc, root.id));
+          })(),
+      });
+    }
+    this.addMenuTrigger(controls, claimsSuggestion ? "More options for suggestion" : "More options for comment", menuItems);
+
+    // What the thread is about; everything after the summary goes in a section that collapses.
+    const summary = card.createDiv({ cls: "sm-summary" });
+    const details = card.createDiv({ cls: "sm-collapse sm-details" });
+    if (claimsSuggestion) {
+      const change = summary.createDiv({ cls: "sm-suggestion-diff" });
+      if (suggestion) renderDiff(change, quoteText, suggestion.replacement);
+      else change.setText(quoteText);
+      if (reveal) {
+        change.addClass("sm-quote-link");
+        change.onclick = reveal;
+      }
+      if (!suggestion) details.createDiv({ text: "Invalid suggestion data.", cls: "sm-suggestion-warning" });
+    } else {
+      const quote = summary.createDiv({ text: quoteText, cls: "sm-quote" });
       if (reveal) {
         quote.addClass("sm-quote-link");
         quote.onclick = reveal;
       }
       if (isOpen && resolution.kind === "resolved" && resolution.fuzzy && root.anchored_text !== undefined) {
-        card.createDiv({ text: `Now reads: "${truncate(root.anchored_text, 80)}"`, cls: "sm-drift" });
+        details.createDiv({ text: `Now reads: "${truncate(root.anchored_text, 80)}"`, cls: "sm-drift" });
       }
     }
+    if (warning) details.createDiv({ text: warning, cls: "sm-suggestion-warning" });
 
-    const entries: Comment[] = [];
-    if (!claimsSuggestion || String(root.text ?? "").length > 0) entries.push(root);
-    entries.push(...thread.replies);
-    for (const entry of entries) {
-      this.renderEntry(card, file, thread.root, entry, claimsSuggestion, copyItem);
-    }
+    if (!claimsSuggestion || rootText.length > 0) this.renderEntry(summary, file, root, root, claimsSuggestion, copyItem);
+    for (const reply of thread.replies) this.renderEntry(details, file, root, reply, claimsSuggestion, copyItem);
 
-    const actions = card.createDiv({ cls: "sm-actions" });
-    if (claimsSuggestion && isOpen && suggestion && !suggestion.result) {
-      const accept = actions.createEl("button", { text: "Accept", cls: "mod-cta" });
-      accept.disabled = resolution.kind !== "resolved" || resolution.ambiguous;
-      accept.onclick = () => {
-        accept.disabled = true;
-        void this.plugin.acceptSuggestion(file, root.id).then((result) => {
-          if (!result.ok) {
-            new Notice(suggestionFailureMessage(result.reason));
-            accept.disabled = false;
-          }
-        });
-      };
-      const decline = actions.createEl("button", { text: "Decline" });
-      decline.onclick = () =>
-        void (async () => {
-          const behavior = this.plugin.settings.resolveBehavior;
-          if (behavior === "remove" && !(await this.confirmed("Decline suggestion?", "This permanently removes the suggestion.", "Decline"))) return;
-          await this.plugin.updateComments(file, (doc) => {
-            const result = finishSuggestion(doc, root.id, "declined", behavior);
-            if (!result.ok) new Notice(suggestionFailureMessage(result.reason));
-          });
-        })();
-    } else if (!isOpen) {
-      const reopen = actions.createEl("button", { text: "Reopen" });
-      reopen.onclick = () =>
-        void this.plugin.updateComments(file, (doc) => {
-          if (claimsSuggestion) reopenSuggestion(doc, root.id);
-          else setThreadResolved(doc, root.id, false);
-        });
-    }
+    // The only bottom action repairs a thread's anchor; decisions live in the header.
     if (isOpen && (resolution.kind === "orphaned" || resolution.ambiguous || (claimsSuggestion && resolution.fuzzy))) {
+      const actions = details.createDiv({ cls: "sm-actions" });
       const reanchor = actions.createEl("button", { text: "Re-anchor to selection" });
       reanchor.onclick = () => void this.reanchorFromSelection(file, root.id);
     }
-    if (!actions.hasChildNodes()) actions.remove();
 
     if (isOpen) {
-      const reply = card.createEl("textarea", {
+      // The buttons show once the box is in use (see .sm-reply-box in styles.css).
+      const box = details.createDiv({ cls: "sm-reply-box" });
+      const reply = box.createEl("textarea", {
         cls: "sm-input",
-        attr: { placeholder: `Reply… ${this.submitHint("send")}`, rows: "2", "aria-label": "Reply" },
+        attr: { placeholder: "Reply…", rows: "2", "aria-label": "Reply" },
       });
+      const cancel = (): void => {
+        reply.value = "";
+        this.setPendingInput(card, false);
+        reply.blur();
+      };
+      const send = (): void => {
+        const text = reply.value.trim();
+        if (!text || reply.disabled) return;
+        reply.disabled = true;
+        void this.plugin
+          .updateComments(file, (doc) => addReply(doc, root.id, this.plugin.newEntry(text)))
+          .then((ok) => {
+            reply.disabled = false;
+            if (!ok) return;
+            reply.value = "";
+            this.setPendingInput(card, false);
+            // The render triggered by the save was skipped while the reply was still in the box.
+            this.requestRender(false);
+          });
+      };
+      this.addSubmitButtons(box, "Reply", send, cancel);
+      reply.addEventListener("input", () => this.setPendingInput(card, reply.value.length > 0));
       reply.onkeydown = (e) => {
-        if (e.key === "Escape") {
-          reply.value = "";
-          reply.blur();
-        } else if (this.shouldSubmit(e)) {
+        if (e.key === "Escape") cancel();
+        else if (this.shouldSubmit(e)) {
           e.preventDefault();
-          const text = reply.value.trim();
-          if (!text || reply.disabled) return;
-          reply.disabled = true;
-          void this.plugin
-            .updateComments(file, (doc) => addReply(doc, root.id, this.plugin.newEntry(text)))
-            .then((ok) => {
-              reply.disabled = false;
-              if (ok) reply.value = "";
-            });
+          send();
         }
       };
     }
+  }
+
+  /** A card with unsent text stays expanded even when another thread is selected. */
+  private setPendingInput(card: HTMLElement, pending: boolean): void {
+    card.toggleClass("sm-has-input", pending);
+    this.setExpanded(card, pending || card.dataset.smId === this.focusedId);
+  }
+
+  private setExpanded(card: HTMLElement, expanded: boolean): void {
+    card.toggleClass("sm-expanded", expanded);
+    card.setAttr("aria-expanded", String(expanded));
   }
 
   private renderEntry(
@@ -585,41 +731,27 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     const isRoot = entry === root;
     const author = String(entry.author);
     const text = String(entry.text ?? "");
-    const row = card.createDiv({ cls: "sm-entry" });
-    const meta = row.createDiv({ cls: "sm-meta" });
-    this.paintAuthor(meta.createSpan({ text: author, cls: "sm-author" }), author);
-    if (!(isRoot && inSuggestion)) this.addTimestamp(meta, String(entry.timestamp));
-    const controls = meta.createDiv({ cls: "sm-entry-controls" });
-    if (isRoot && !inSuggestion && !root.resolved) {
-      const resolveBtn = controls.createEl("button", {
-        cls: "sm-entry-action clickable-icon",
-        attr: { "aria-label": "Resolve comment" },
-      });
-      setIcon(resolveBtn, "check");
-      setTooltip(resolveBtn, "Resolve");
-      resolveBtn.onclick = () => this.resolveThread(file, root.id);
+    // The root's author, time and actions are in the card header; replies only show when expanded.
+    const row = card.createDiv({ cls: isRoot ? "sm-entry sm-root-entry" : "sm-entry sm-reply" });
+    if (!isRoot) {
+      const meta = row.createDiv({ cls: "sm-meta" });
+      this.paintAuthor(meta.createSpan({ text: author, cls: "sm-author" }), author);
+      this.addTimestamp(meta, String(entry.timestamp));
+      const controls = meta.createDiv({ cls: "sm-entry-controls" });
+      this.addMenuTrigger(controls, `More options for reply by ${author}`, [
+        copyItem,
+        {
+          title: "Delete reply",
+          icon: "trash-2",
+          warning: true,
+          run: () =>
+            void (async () => {
+              if (!(await this.confirmed("Delete reply?", "This permanently removes this entry.", "Delete"))) return;
+              await this.plugin.updateComments(file, (doc) => deleteComment(doc, entry.id));
+            })(),
+        },
+      ]);
     }
-    const deleteLabel = isRoot ? (inSuggestion ? "Delete explanation" : "Delete comment") : "Delete reply";
-    const deleteMessage = isRoot && !inSuggestion
-      ? "This permanently removes the comment and all of its replies."
-      : "This permanently removes this entry.";
-    this.addMenuTrigger(controls, `More options for comment by ${author}`, [
-      copyItem,
-      {
-        title: deleteLabel,
-        icon: "trash-2",
-        warning: true,
-        run: () =>
-          void (async () => {
-            if (!(await this.confirmed(`${deleteLabel}?`, deleteMessage, "Delete"))) return;
-            await this.plugin.updateComments(file, (doc) => {
-              if (!isRoot) deleteComment(doc, entry.id);
-              else if (inSuggestion) editText(doc, entry.id, text, "");
-              else deleteThread(doc, entry.id);
-            });
-          })(),
-      },
-    ]);
 
     const textEl = row.createDiv({
       cls: "sm-text sm-text-editable",
@@ -631,6 +763,8 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     this.wireCommentLinks(textEl, file);
 
     const beginEdit = (): void => {
+      const cardEl = row.closest<HTMLElement>(".sm-card");
+      if (cardEl) this.setPendingInput(cardEl, true);
       const input = row.createEl("textarea", {
         cls: "sm-input sm-edit-input",
         attr: { rows: "3", "aria-label": `Edit comment by ${author}` },
@@ -639,7 +773,9 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       textEl.replaceWith(input);
       const editActions = row.createDiv({ cls: "sm-actions sm-edit-actions" });
       const save = editActions.createEl("button", { text: "Save", cls: "mod-cta" });
+      setTooltip(save, `Save (${this.submitShortcutLabel()})`);
       const cancel = editActions.createEl("button", { text: "Cancel" });
+      setTooltip(cancel, "Cancel (Esc)");
       const submit = (): void => {
         if (save.disabled) return;
         const next = input.value.trim();
@@ -736,15 +872,27 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     });
   }
 
-  private addTimestamp(container: HTMLElement, timestamp: string): void {
+  private addTimestamp(container: HTMLElement, timestamp: string, extraCls?: string): void {
     const formatted = formatSidebarTimestamp(timestamp, this.plugin.settings.timestampDisplay);
     if (formatted === null) return;
-    const element = container.createSpan({ text: formatted, cls: "sm-ts" });
+    const element = container.createSpan({ text: formatted, cls: extraCls ? `sm-ts ${extraCls}` : "sm-ts" });
     element.dataset.smTimestamp = timestamp;
     if (this.plugin.settings.timestampDisplay !== "full") setTooltip(element, formatTs(timestamp));
   }
 
+  /** The compact card's time ("3h"), with the full time on hover. */
+  private addShortTimestamp(container: HTMLElement, timestamp: string): void {
+    if (this.plugin.settings.timestampDisplay === "hidden") return;
+    const element = container.createSpan({ text: shortTimestamp(timestamp), cls: "sm-ts sm-ts-short sm-compact-only" });
+    element.dataset.smShortTimestamp = timestamp;
+    setTooltip(element, formatTs(timestamp));
+  }
+
   private refreshTimestamps(): void {
+    for (const element of Array.from(this.contentEl.querySelectorAll<HTMLElement>(".sm-ts[data-sm-short-timestamp]"))) {
+      const timestamp = element.dataset.smShortTimestamp;
+      if (timestamp) element.setText(shortTimestamp(timestamp));
+    }
     for (const element of Array.from(this.contentEl.querySelectorAll<HTMLElement>(".sm-ts[data-sm-timestamp]"))) {
       const timestamp = element.dataset.smTimestamp;
       if (!timestamp) continue;

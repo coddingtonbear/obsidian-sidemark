@@ -48,6 +48,37 @@
   background-color: color-mix(in srgb, var(--color-green, #3fb950) 35%, transparent);
 }
 
+.sm-highlight.sm-suggestion-inline {
+  background-color: transparent;
+}
+
+.sm-highlight.sm-suggestion-inline.sm-highlight-active {
+  background-color: color-mix(in srgb, var(--color-green, #3fb950) 12%, transparent);
+}
+
+.sm-suggestion-strike {
+  text-decoration: line-through;
+  text-decoration-color: var(--color-red, #e5534b);
+  color: var(--text-muted);
+  background-color: color-mix(in srgb, var(--color-red, #e5534b) 12%, transparent);
+}
+
+.sm-suggestion-insert {
+  color: var(--color-green, #3fb950);
+  background-color: color-mix(in srgb, var(--color-green, #3fb950) 14%, transparent);
+  white-space: pre-wrap;
+  cursor: pointer;
+}
+
+.sm-suggestion-insert.sm-suggestion-insert-active {
+  background-color: color-mix(in srgb, var(--color-green, #3fb950) 30%, transparent);
+}
+
+/* Table cells draw the whole passage as replaced. */
+.sm-highlight.sm-suggestion-strike {
+  border-bottom: none;
+}
+
 .sm-highlight.sm-highlight-active {
   background-color: color-mix(
     in srgb,
@@ -128,6 +159,23 @@
   padding: 4px;
 }
 
+.sm-entry-action.sm-accept:hover {
+  color: var(--color-green, #3fb950);
+}
+
+.sm-entry-action.sm-decline:hover {
+  color: var(--color-red, #e5534b);
+}
+
+.sm-entry-action.sm-action-unavailable {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sm-entry-action.sm-action-unavailable:hover {
+  color: inherit;
+}
+
 .sm-entry-menu-trigger svg,
 .sm-entry-action svg {
   width: 14px;
@@ -171,6 +219,12 @@
   color: var(--text-muted);
 }
 
+.sm-field-hint {
+  margin-top: 2px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
 .sm-suggestion-card {
   border-left: 3px dashed var(--color-green, #3fb950);
 }
@@ -204,36 +258,30 @@
   background: var(--background-secondary);
 }
 
-.sm-suggestion-change {
-  display: grid;
-  gap: 3px;
+.sm-suggestion-diff {
   margin: 7px 0;
-  font-family: var(--font-monospace);
-  font-size: var(--font-ui-small);
-}
-
-.sm-suggestion-original,
-.sm-suggestion-replacement {
   padding: 5px 7px;
   border-radius: 4px;
+  background: var(--background-secondary);
+  font-size: var(--font-ui-small);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.sm-suggestion-original {
+.sm-draft-preview {
+  margin-top: 6px;
+}
+
+.sm-diff-del {
   color: var(--text-muted);
-  background: var(--background-secondary);
   text-decoration: line-through;
+  text-decoration-color: var(--color-red, #e5534b);
+  background: color-mix(in srgb, var(--color-red, #e5534b) 14%, transparent);
 }
 
-.sm-suggestion-replacement {
-  color: var(--text-normal);
-  background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-primary));
-}
-
-.sm-suggestion-arrow {
-  padding-left: 7px;
-  color: var(--text-muted);
+.sm-diff-ins {
+  color: var(--color-green, #3fb950);
+  background: color-mix(in srgb, var(--color-green, #3fb950) 16%, transparent);
 }
 
 .sm-suggestion-warning {
@@ -280,4 +328,189 @@
 
 .sm-error {
   color: var(--text-error);
+}
+
+/* Accept/decline buttons shown when hovering a suggestion in the note. */
+.cm-tooltip:has(> .sm-suggestion-tooltip) {
+  background: transparent;
+  border: none;
+}
+
+.sm-suggestion-tooltip {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 4px);
+  box-shadow: var(--shadow-s);
+}
+
+.sm-suggestion-tooltip button:first-child:hover {
+  color: var(--color-green, #3fb950);
+}
+
+.sm-suggestion-tooltip button:last-child:hover {
+  color: var(--color-red, #e5534b);
+}
+
+/* ── Compact cards ─────────────────────────────────────────
+   Every card is rendered in full; unless it's expanded (selected, or holding
+   unsent text), only its header, a one-line quote and a two-line summary show. */
+.sm-card:not(.sm-expanded) .sm-full-only,
+.sm-card.sm-expanded .sm-compact-only {
+  display: none;
+}
+
+.sm-card {
+  interpolate-size: allow-keywords;
+  transition:
+    opacity 0.2s ease,
+    padding 0.2s ease,
+    margin 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.sm-card:not(.sm-expanded) {
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+
+/* While a thread is selected, the others fade back. */
+.sm-sidebar:has(.sm-card.sm-expanded:not(.sm-draft)) .sm-card:not(.sm-expanded):not(:hover):not(:focus-within) {
+  opacity: 0.55;
+}
+
+/* The parts only an expanded card shows ease open and closed. */
+.sm-collapse {
+  height: auto;
+  overflow: hidden;
+  transition:
+    height 0.2s ease,
+    opacity 0.2s ease,
+    visibility 0.2s allow-discrete;
+}
+
+.sm-card:not(.sm-expanded) .sm-collapse {
+  height: 0;
+  opacity: 0;
+  visibility: hidden;
+}
+
+.sm-root-entry .sm-text,
+.sm-suggestion-diff {
+  max-height: max-content;
+  transition: max-height 0.2s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sm-card,
+  .sm-collapse,
+  .sm-root-entry .sm-text,
+  .sm-suggestion-diff {
+    transition: none;
+  }
+}
+
+.sm-card-header {
+  align-items: center;
+  min-height: 24px;
+}
+
+.sm-card-header .sm-ts {
+  white-space: nowrap;
+}
+
+.sm-card:not(.sm-expanded):not(:hover):not(:focus-within) .sm-card-header .sm-entry-controls {
+  visibility: hidden;
+}
+
+.sm-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--text-faint);
+}
+
+.sm-badge svg,
+.sm-badge-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.sm-badge-icon {
+  display: inline-flex;
+}
+
+.sm-badge-warning {
+  color: var(--text-warning);
+}
+
+.sm-quote {
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
+.sm-card:not(.sm-expanded) .sm-quote {
+  display: block;
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sm-card:not(.sm-expanded) .sm-root-entry {
+  margin: 2px 0 0;
+}
+
+.sm-card:not(.sm-expanded) .sm-root-entry .sm-text,
+.sm-card:not(.sm-expanded) .sm-suggestion-diff {
+  max-height: calc(2 * var(--line-height-normal, 1.5) * 1em);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent);
+  mask-image: linear-gradient(to bottom, black 60%, transparent);
+}
+
+.sm-card:not(.sm-expanded) .sm-root-entry .sm-text > :first-child {
+  margin-top: 0;
+}
+
+.sm-card:not(.sm-expanded) .sm-suggestion-diff {
+  margin: 2px 0 0;
+  padding: 0;
+  background: none;
+}
+
+/* Resolved threads collapse to their header and one line of text. */
+.sm-card.sm-resolved:not(.sm-expanded) .sm-quote,
+.sm-card.sm-resolved.sm-suggestion-card:not(.sm-expanded) .sm-root-entry {
+  display: none;
+}
+
+.sm-card.sm-resolved:not(.sm-expanded) .sm-root-entry .sm-text,
+.sm-card.sm-resolved:not(.sm-expanded) .sm-suggestion-diff {
+  max-height: calc(var(--line-height-normal, 1.5) * 1em);
+  -webkit-mask-image: none;
+  mask-image: none;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* A reply box shows its buttons only while it's focused or holds text. */
+.sm-reply-box:not(:focus-within) .sm-actions {
+  display: none;
+}
+
+.sm-card.sm-has-input .sm-reply-box .sm-actions {
+  display: flex;
+}
+
+.sm-card:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
 }

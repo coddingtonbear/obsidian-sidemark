@@ -17,6 +17,8 @@ export interface SidemarkSettings {
   timestampDisplay: TimestampDisplay;
   confirmDestructiveActions: boolean;
   authorColorOverrides: AuthorColorOverrides;
+  /** Show open suggestions in the note as struck-out text followed by the replacement. */
+  showSuggestionsInline: boolean;
   /** Whether the comment panel has been added to the sidebar once already. */
   sidebarAdded: boolean;
 }
@@ -34,11 +36,14 @@ export const DEFAULT_SETTINGS: SidemarkSettings = {
   timestampDisplay: "full",
   confirmDestructiveActions: true,
   authorColorOverrides: {},
+  showSuggestionsInline: true,
   sidebarAdded: false,
 };
 
 export interface SettingsEffects {
   refreshHighlights: boolean;
+  /** Editor decorations must be rebuilt. */
+  refreshEditors: boolean;
   refreshSidebar: boolean;
   resetResolvedVisibility: boolean;
 }
@@ -85,6 +90,7 @@ export function parseSettings(value: unknown): SidemarkSettings {
     ),
     confirmDestructiveActions: booleanSetting(raw.confirmDestructiveActions, DEFAULT_SETTINGS.confirmDestructiveActions),
     authorColorOverrides: normalizeAuthorColorOverrides(raw.authorColorOverrides),
+    showSuggestionsInline: booleanSetting(raw.showSuggestionsInline, DEFAULT_SETTINGS.showSuggestionsInline),
     sidebarAdded: booleanSetting(raw.sidebarAdded, DEFAULT_SETTINGS.sidebarAdded),
   };
 }
@@ -94,6 +100,7 @@ export function settingsEffects(previous: SidemarkSettings, next: SidemarkSettin
   return {
     refreshHighlights:
       previous.highlightColor !== next.highlightColor || previous.highlightOpacity !== next.highlightOpacity,
+    refreshEditors: previous.showSuggestionsInline !== next.showSuggestionsInline,
     refreshSidebar:
       resetResolvedVisibility ||
       previous.sidebarSortOrder !== next.sidebarSortOrder ||

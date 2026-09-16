@@ -58,6 +58,14 @@ export class SidemarkSettingTab extends PluginSettingTab {
         toggle.setValue(settings.colorAuthorNames).onChange((value) => void plugin.updateSettings({ colorAuthorNames: value }))
       );
     new Setting(containerEl)
+      .setName("Show suggestions in the note")
+      .setDesc("Strike through the text a suggestion would replace and show the replacement after it. Turn off to highlight suggestions like comments.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(settings.showSuggestionsInline)
+          .onChange((value) => void plugin.updateSettings({ showSuggestionsInline: value }))
+      );
+    new Setting(containerEl)
       .setName("Timestamps")
       .addDropdown((dropdown) =>
         dropdown

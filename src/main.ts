@@ -15,7 +15,7 @@ import { confirmAction } from "./confirm-action";
 import { type AnchorTracker, buildEditorExtension, type EditorHost } from "./editor-extension";
 import { buildExportNote, type ResolvedThread } from "./export";
 import { selectedTextHash } from "./hash";
-import { buildThreads, type Comment, type MrsfDocument, suggestionOf } from "./model";
+import { buildThreads, type Comment, isResolved, type MrsfDocument, suggestionOf, type SuggestionResult } from "./model";
 import {
   type AnchorFields,
   finishSuggestion,
@@ -29,8 +29,16 @@ import {
 import { SidemarkSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, parseSettings, settingsEffects, type SidemarkSettings } from "./settings-model";
 import { notePathFor } from "./sidecar-path";
-import { type Draft, isSidebar, type SidemarkSidebar, SidemarkSidebar as SidebarView, VIEW_TYPE_SIDEMARK } from "./sidebar";
+import {
+  type Draft,
+  isSidebar,
+  type SidemarkSidebar,
+  SidemarkSidebar as SidebarView,
+  suggestionFailureMessage,
+  VIEW_TYPE_SIDEMARK,
+} from "./sidebar";
 import { type RenameOutcome, SidecarStore } from "./store";
+import { suggestionEdit } from "./suggestion-edit";
 import { migrateTandemComments } from "./tandem-runner";
 import { VaultSidecarIO } from "./vault-io";
 
@@ -43,7 +51,9 @@ interface AcceptPlan {
   thread: Comment[];
 }
 
-export type AcceptResult = { ok: true } | { ok: false; reason: SuggestionFailure | "no-editor" | "orphaned" | "changed" };
+export type AcceptResult =
+  | { ok: true }
+  | { ok: false; reason: SuggestionFailure | "no-editor" | "orphaned" | "changed" | "ambiguous" };
 
 export default class SidemarkPlugin extends Plugin implements EditorHost {
   settings: SidemarkSettings = DEFAULT_SETTINGS;
@@ -76,6 +86,30 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       editorCallback: (editor, ctx) => {
         if (ctx.file) void this.startDraft(ctx.file, editor, "suggestion");
       },
+    });
+    this.addCommand({
+      id: "accept-suggestion",
+      name: "Accept suggestion at cursor",
+      icon: "check",
+      editorCheckCallback: (checking, editor, ctx) => this.suggestionCommand(checking, editor, ctx.file, "accepted"),
+    });
+    this.addCommand({
+      id: "decline-suggestion",
+      name: "Decline suggestion at cursor",
+      icon: "x",
+      editorCheckCallback: (checking, editor, ctx) => this.suggestionCommand(checking, editor, ctx.file, "declined"),
+    });
+    this.addCommand({
+      id: "next-suggestion",
+      name: "Go to next suggestion",
+      icon: "arrow-down",
+      editorCheckCallback: (checking, editor, ctx) => this.jumpToSuggestion(checking, editor, ctx.file, 1),
+    });
+    this.addCommand({
+      id: "previous-suggestion",
+      name: "Go to previous suggestion",
+      icon: "arrow-up",
+      editorCheckCallback: (checking, editor, ctx) => this.jumpToSuggestion(checking, editor, ctx.file, -1),
     });
     this.addCommand({
       id: "open-sidebar",
@@ -163,6 +197,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     await this.saveData(this.settings);
     const effects = settingsEffects(previous, this.settings);
     if (effects.refreshHighlights) this.applyHighlightAppearance();
+    if (effects.refreshEditors) for (const tracker of this.trackers) tracker.refresh();
     if (effects.refreshSidebar) {
       for (const view of this.sidebars()) view.settingsChanged(effects.resetResolvedVisibility);
     }
@@ -218,6 +253,73 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       if (id) view.focusThread(id);
       else view.clearFocus();
     }
+  }
+
+  showSuggestionsInline(): boolean {
+    return this.settings.showSuggestionsInline;
+  }
+
+  /** Highlights a thread's passage in every editor showing the note (null clears it). */
+  showThreadInEditor(file: TFile, id: string | null): void {
+    for (const tracker of this.trackersFor(file.path)) tracker.showThread(id);
+  }
+
+  decideSuggestion(notePath: string, id: string, result: SuggestionResult): void {
+    const file = this.app.vault.getFileByPath(notePath);
+    if (file) void this.decideSuggestionIn(file, id, result);
+  }
+
+  /** Accepts or declines a suggestion, telling the user why when that isn't possible. */
+  async decideSuggestionIn(file: TFile, id: string, result: SuggestionResult): Promise<boolean> {
+    if (result === "accepted") {
+      const outcome = await this.acceptSuggestion(file, id);
+      if (!outcome.ok) new Notice(suggestionFailureMessage(outcome.reason));
+      return outcome.ok;
+    }
+    const behavior = this.settings.resolveBehavior;
+    if (
+      behavior === "remove" &&
+      this.settings.confirmDestructiveActions &&
+      !(await confirmAction(this.app, {
+        title: "Decline suggestion?",
+        message: "This permanently removes the suggestion.",
+        confirmLabel: "Decline",
+      }))
+    ) {
+      return false;
+    }
+    let failure: SuggestionFailure | null = null;
+    const saved = await this.updateComments(file, (doc) => {
+      const outcome = finishSuggestion(doc, id, "declined", behavior);
+      if (!outcome.ok) failure = outcome.reason;
+    });
+    if (failure) new Notice(suggestionFailureMessage(failure));
+    return saved && !failure;
+  }
+
+  private suggestionCommand(checking: boolean, editor: Editor, file: TFile | null, result: SuggestionResult): boolean {
+    if (!file) return false;
+    const anchor = this.trackerFor(file.path)?.suggestionAt(editor.posToOffset(editor.getCursor()));
+    if (!anchor) return false;
+    if (!checking) void this.decideSuggestionIn(file, anchor.id, result);
+    return true;
+  }
+
+  /** Selects the next (or previous) open suggestion after the cursor, wrapping around the note. */
+  private jumpToSuggestion(checking: boolean, editor: Editor, file: TFile | null, direction: 1 | -1): boolean {
+    const suggestions = file ? (this.trackerFor(file.path)?.openSuggestions() ?? []) : [];
+    if (suggestions.length === 0) return false;
+    if (checking) return true;
+    const cursor = editor.posToOffset(editor.getCursor(direction === 1 ? "to" : "from"));
+    const target =
+      direction === 1
+        ? (suggestions.find((a) => a.from >= cursor) ?? suggestions[0])
+        : ([...suggestions].reverse().find((a) => a.to <= cursor && a.from < cursor) ?? suggestions[suggestions.length - 1]);
+    const from = editor.offsetToPos(target.from);
+    const to = editor.offsetToPos(target.to);
+    editor.setSelection(from, to);
+    editor.scrollIntoView({ from, to }, true);
+    return true;
   }
 
   /**
@@ -312,17 +414,18 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
   async resolveThreads(file: TFile): Promise<ResolvedThread[]> {
     const state = await this.store.load(file.path);
     const text = await this.noteText(file);
-    const tracked = new Map((this.trackerFor(file.path)?.anchors ?? []).map((a) => [a.id, a]));
+    const tracker = this.trackerFor(file.path);
+    const tracked = new Map((tracker?.anchors ?? []).map((a) => [a.id, a]));
     return buildThreads(state.doc).map((thread) => {
       const { root } = thread;
       const live = tracked.get(root.id);
       let resolution: Resolution;
-      if (live && !root.resolved) {
+      if (live && !isResolved(root)) {
         resolution = {
           kind: "resolved",
           from: live.from,
           to: live.to,
-          ambiguous: false,
+          ambiguous: tracker?.isAmbiguous(root.id) ?? false,
           fuzzy: text.slice(live.from, live.to) !== root.selected_text,
         };
       } else if (suggestionOf(root)?.result === "accepted") {
@@ -409,7 +512,12 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
         return;
       }
       const text = editor.getValue();
-      let range: { from: number; to: number } | null = this.trackerFor(file.path)?.anchors.find((a) => a.id === id) ?? null;
+      const tracker = this.trackerFor(file.path);
+      if (tracker?.isAmbiguous(id)) {
+        result.outcome = { ok: false, reason: "ambiguous" };
+        return;
+      }
+      let range: { from: number; to: number } | null = tracker?.anchors.find((a) => a.id === id) ?? null;
       if (!range) {
         const r = resolveComment(comment, text);
         range = r.kind === "resolved" && !r.ambiguous ? r : null;
@@ -445,10 +553,11 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       });
       return { ok: false, reason: "changed" };
     }
+    const edit = suggestionEdit(editor.getValue(), from, to, replacement);
     editor.transaction({
-      changes: [{ from: editor.offsetToPos(from), to: editor.offsetToPos(to), text: replacement }],
+      changes: [{ from: editor.offsetToPos(edit.from), to: editor.offsetToPos(edit.to), text: edit.insert }],
     });
-    editor.setCursor(editor.offsetToPos(from + replacement.length));
+    editor.setCursor(editor.offsetToPos(edit.from + edit.insert.length));
     return { ok: true };
   }
 
@@ -482,19 +591,31 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     const folder = file.parent && !file.parent.isRoot() ? file.parent.path + "/" : "";
     const path = normalizePath(`${folder}${file.basename} – Comments.md`);
     const existing = this.app.vault.getAbstractFileByPath(path);
+    let exported: TFile;
     if (existing instanceof TFile) {
-      const replace = await confirmAction(this.app, {
-        title: "Replace the earlier export?",
-        message: `${path} already exists. Exporting again replaces its contents, including any edits made to it.`,
-        confirmLabel: "Replace",
-      });
-      if (!replace) return;
+      // An export is a snapshot, so exporting again replaces the previous one.
       await this.app.vault.modify(existing, content);
+      exported = existing;
     } else if (existing) {
       new Notice(`Can't export: ${path} is a folder.`);
       return;
-    } else await this.app.vault.create(path, content);
+    } else {
+      exported = await this.app.vault.create(path, content);
+    }
+    await this.openExport(exported);
     new Notice(`Comments exported to ${path}`);
+  }
+
+  /** Shows the export, reusing a tab that already has it open. */
+  private async openExport(file: TFile): Promise<void> {
+    const { workspace } = this.app;
+    const open = workspace.getLeavesOfType("markdown").find((leaf) => leaf.view instanceof MarkdownView && leaf.view.file?.path === file.path);
+    if (open) {
+      await workspace.revealLeaf(open);
+      workspace.setActiveLeaf(open, { focus: true });
+      return;
+    }
+    await workspace.getLeaf("tab").openFile(file);
   }
 
   async migrateTandem(): Promise<void> {
