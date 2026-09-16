@@ -33,6 +33,15 @@ export function suggestionOf(comment: Comment): SuggestionData | null {
   return result ? { replacement: raw.replacement, result } : { replacement: raw.replacement };
 }
 
+/**
+ * Whether a thread is closed: its root is marked resolved, or it's a
+ * suggestion that records an outcome. Other tools may write an outcome
+ * without setting `resolved`, and such a suggestion can't be acted on anymore.
+ */
+export function isResolved(root: Comment): boolean {
+  return root.resolved === true || suggestionOf(root)?.result !== undefined;
+}
+
 /** True when a comment claims to be a suggestion, even if its data is malformed. */
 export function isSuggestionComment(comment: Comment): boolean {
   return comment.x_suggestion !== undefined || comment.type === "suggestion";

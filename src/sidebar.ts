@@ -16,7 +16,7 @@ import { resolveAuthorColor } from "./author-color";
 import { confirmAction } from "./confirm-action";
 import { formatThread, formatTs, type ResolvedThread } from "./export";
 import type SidemarkPlugin from "./main";
-import { type Comment, suggestionOf, threadActivity } from "./model";
+import { type Comment, isResolved, suggestionOf, threadActivity } from "./model";
 import {
   type AnchorFields,
   addComment,
@@ -226,9 +226,9 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     if (this.draft && this.draft.filePath === file.path) this.renderDraft(container, file, this.draft);
     else this.draft = null;
 
-    const open = this.sorted(threads.filter((t) => !t.thread.root.resolved && t.resolution.kind === "resolved"));
-    const orphans = this.sorted(threads.filter((t) => !t.thread.root.resolved && t.resolution.kind === "orphaned"));
-    const done = this.sorted(threads.filter((t) => t.thread.root.resolved));
+    const open = this.sorted(threads.filter((t) => !isResolved(t.thread.root) && t.resolution.kind === "resolved"));
+    const orphans = this.sorted(threads.filter((t) => !isResolved(t.thread.root) && t.resolution.kind === "orphaned"));
+    const done = this.sorted(threads.filter((t) => isResolved(t.thread.root)));
 
     if (!open.length && !orphans.length && !(this.showResolved && done.length) && !this.draft) {
       container.createDiv({
@@ -438,9 +438,9 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     const suggestion = suggestionOf(root);
     const claimsSuggestion = root.x_suggestion !== undefined;
     const isDeletion = suggestion?.replacement === "";
-    const isOpen = !root.resolved;
+    const isOpen = !isResolved(root);
     const cls = ["sm-card"];
-    if (root.resolved) cls.push("sm-resolved");
+    if (!isOpen) cls.push("sm-resolved");
     if (resolution.kind === "orphaned" && isOpen) cls.push("sm-orphan");
     if (claimsSuggestion) cls.push("sm-suggestion-card");
     if (resolution.kind === "resolved" && resolution.ambiguous) cls.push("sm-ambiguous");
@@ -595,7 +595,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     this.paintAuthor(meta.createSpan({ text: author, cls: "sm-author" }), author);
     if (!(isRoot && inSuggestion)) this.addTimestamp(meta, String(entry.timestamp));
     const controls = meta.createDiv({ cls: "sm-entry-controls" });
-    if (isRoot && !inSuggestion && !root.resolved) {
+    if (isRoot && !inSuggestion && !isResolved(root)) {
       const resolveBtn = controls.createEl("button", {
         cls: "sm-entry-action clickable-icon",
         attr: { "aria-label": "Resolve comment" },

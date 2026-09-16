@@ -1,5 +1,5 @@
 import type { Comment, MrsfDocument, SuggestionData, SuggestionResult } from "./model";
-import { suggestionOf } from "./model";
+import { isResolved, suggestionOf } from "./model";
 
 export interface NewEntry {
   id: string;
@@ -174,7 +174,7 @@ export function retarget(doc: MrsfDocument, id: string, anchor: AnchorFields): v
 
 /** Removes every resolved thread; returns how many were removed. */
 export function removeResolvedThreads(doc: MrsfDocument): number {
-  const roots = doc.comments.filter((c) => c.reply_to === undefined && c.resolved);
+  const roots = doc.comments.filter((c) => c.reply_to === undefined && isResolved(c));
   for (const root of roots) deleteThread(doc, root.id);
   return roots.length;
 }

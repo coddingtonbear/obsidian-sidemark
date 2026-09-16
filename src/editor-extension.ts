@@ -12,7 +12,7 @@ import {
 } from "@codemirror/view";
 import { editorInfoField, setIcon } from "obsidian";
 import { applyTrackedPosition, PERSIST_MIN_SIMILARITY, resolveComment } from "./anchoring";
-import { buildThreads, type Comment, suggestionOf } from "./model";
+import { buildThreads, type Comment, isResolved, suggestionOf } from "./model";
 import type { SidecarStore } from "./store";
 import { type AnchorStyle, applyTableHighlights, rangesTouchTable } from "./table-highlight";
 import { isFullReplace, mapAnchors, type TrackedAnchor } from "./tracking";
@@ -60,6 +60,11 @@ class ReplacementWidget extends WidgetType {
     span.setAttribute("data-sm-id", this.id);
     span.setAttribute("aria-label", `Suggested replacement: ${this.text}`);
     return span;
+  }
+
+  /** A multi-line replacement must say so, or CodeMirror mis-measures the lines after it. */
+  get lineBreaks(): number {
+    return this.text.split("\n").length - 1;
   }
 
   ignoreEvent(): boolean {
@@ -245,7 +250,7 @@ export class AnchorTracker {
     if (!state) return [];
     return buildThreads(state.doc)
       .map((thread) => thread.root)
-      .filter((root) => !root.resolved);
+      .filter((root) => !isResolved(root));
   }
 
   private recoverMissing(text: string, present: Set<string>): void {
@@ -333,7 +338,7 @@ export class AnchorTracker {
         (doc) => {
           for (const anchor of anchors) {
             const comment = doc.comments.find((c) => c.id === anchor.id);
-            if (!comment || comment.resolved) continue;
+            if (!comment || isResolved(comment)) continue;
             // Someone else re-targeted this comment since we last looked; their change wins.
             const signature = anchorSignature(comment);
             const current = this.notePath === notePath ? this.signatures.get(anchor.id) : undefined;

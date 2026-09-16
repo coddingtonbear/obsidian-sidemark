@@ -15,7 +15,7 @@ import { confirmAction } from "./confirm-action";
 import { type AnchorTracker, buildEditorExtension, type EditorHost } from "./editor-extension";
 import { buildExportNote, type ResolvedThread } from "./export";
 import { selectedTextHash } from "./hash";
-import { buildThreads, type Comment, type MrsfDocument, suggestionOf, type SuggestionResult } from "./model";
+import { buildThreads, type Comment, isResolved, type MrsfDocument, suggestionOf, type SuggestionResult } from "./model";
 import {
   type AnchorFields,
   finishSuggestion,
@@ -412,7 +412,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       const { root } = thread;
       const live = tracked.get(root.id);
       let resolution: Resolution;
-      if (live && !root.resolved) {
+      if (live && !isResolved(root)) {
         resolution = {
           kind: "resolved",
           from: live.from,

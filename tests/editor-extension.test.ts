@@ -355,6 +355,26 @@ describe("AnchorTracker", () => {
     expect(h.tracker.suggestionAt(TEXT.indexOf("Second"))).toBeNull();
   });
 
+  it("doesn't track a suggestion that records an outcome, even if it isn't marked resolved", async () => {
+    const suggestion = { ...commentOn(TEXT, "Second", "s"), type: "suggestion", x_suggestion: { replacement: "2nd", result: "accepted" } };
+    const h = new Harness(TEXT, [suggestion]);
+    await settle();
+    expect(h.decorated()).toEqual([]);
+  });
+
+  it("tells CodeMirror how many lines a multi-line replacement takes", async () => {
+    const suggestion = { ...commentOn(TEXT, "Second", "s"), type: "suggestion", x_suggestion: { replacement: "Two\nlines\nhere" } };
+    const h = new Harness(TEXT, [suggestion]);
+    await settle();
+    const widgets: number[] = [];
+    const iter = h.tracker.decorations.iter();
+    for (; iter.value; iter.next()) {
+      const widget = (iter.value.spec as { widget?: { lineBreaks: number } }).widget;
+      if (widget) widgets.push(widget.lineBreaks);
+    }
+    expect(widgets).toEqual([2]);
+  });
+
   it("doesn't preview a decided suggestion", async () => {
     const suggestion = {
       ...commentOn(TEXT, "Second", "s"),

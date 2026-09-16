@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildThreads, emptyDocument, suggestionOf, type MrsfDocument } from "../src/model";
+import { buildThreads, emptyDocument, isResolved, suggestionOf, type MrsfDocument } from "../src/model";
 import {
   addComment,
   addReply,
@@ -105,6 +105,24 @@ describe("mutations", () => {
     expect(doc.comments[0].anchored_text).toBeUndefined();
     expect(doc.comments[0].x_reanchor_status).toBeUndefined();
     expect(doc.comments[0].x_prefix).toBeUndefined();
+  });
+});
+
+describe("isResolved", () => {
+  const base = { id: "s", author: "A", timestamp: "2026-09-16T10:00:00Z", text: "", resolved: false };
+
+  it("treats a suggestion with an outcome as resolved even when it isn't marked so", () => {
+    expect(isResolved(base)).toBe(false);
+    expect(isResolved({ ...base, resolved: true })).toBe(true);
+    expect(isResolved({ ...base, x_suggestion: { replacement: "x" } })).toBe(false);
+    expect(isResolved({ ...base, x_suggestion: { replacement: "x", result: "declined" } })).toBe(true);
+  });
+
+  it("lets Remove resolved threads remove such suggestions", () => {
+    const doc = emptyDocument("Note.md");
+    doc.comments.push({ ...base, x_suggestion: { replacement: "x", result: "accepted" } });
+    expect(removeResolvedThreads(doc)).toBe(1);
+    expect(doc.comments).toEqual([]);
   });
 });
 
