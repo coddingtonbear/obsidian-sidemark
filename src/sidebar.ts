@@ -159,7 +159,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     for (const card of Array.from(this.contentEl.querySelectorAll<HTMLElement>(".sm-card[data-sm-id]"))) {
       const match = card.dataset.smId === this.focusedId;
       card.toggleClass("sm-focused", match);
-      card.toggleClass("sm-expanded", match || card.hasClass("sm-has-input"));
+      this.setExpanded(card, match || card.hasClass("sm-has-input"));
       if (match) focused = card;
     }
     return focused;
@@ -510,10 +510,22 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       this.pendingScrollId = null;
       window.setTimeout(() => card.scrollIntoView({ block: "nearest" }), 0);
     }
-    card.addEventListener("click", (event) => {
-      if (event.target instanceof Element && event.target.closest("button, textarea, a, input")) return;
+    const select = (): void => {
       this.focusThread(root.id, false);
       this.plugin.showThreadInEditor(file, root.id);
+    };
+    card.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.closest("button, textarea, a, input")) return;
+      select();
+    });
+    // Keyboard users select a card by focusing it and pressing Enter or Space.
+    card.tabIndex = 0;
+    card.setAttr("aria-expanded", String(root.id === this.focusedId));
+    card.setAttr("aria-label", `${claimsSuggestion ? "Suggestion" : "Comment"} by ${String(root.author)}`);
+    card.addEventListener("keydown", (event) => {
+      if (event.target !== card || (event.key !== "Enter" && event.key !== " ")) return;
+      event.preventDefault();
+      select();
     });
     const copyItem = {
       title: "Copy",
@@ -564,18 +576,22 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     const menuItems: { title: string; icon: string; warning?: boolean; run: () => void }[] = [copyItem];
     if (claimsSuggestion) {
       if (isOpen && suggestion && !suggestion.result) {
-        const decide = (result: "accepted" | "declined") => (button: HTMLButtonElement) => {
-          button.disabled = true;
+        // Both buttons stay disabled while either decision is being saved.
+        const buttons: HTMLButtonElement[] = [];
+        const decide = (result: "accepted" | "declined") => () => {
+          for (const b of buttons) b.disabled = true;
           void this.plugin.decideSuggestionIn(file, root.id, result).then((ok) => {
-            if (!ok) button.disabled = false;
+            if (!ok) for (const b of buttons) b.disabled = false;
           });
         };
         let unavailable: string | null = null;
         if (resolution.kind === "orphaned") unavailable = suggestionFailureMessage("orphaned");
         else if (resolution.ambiguous) unavailable = suggestionFailureMessage("ambiguous");
         else if (resolution.fuzzy) unavailable = suggestionFailureMessage("changed");
-        this.addIconButton(controls, { icon: "check", label: "Accept suggestion", cls: "sm-accept", unavailable, run: decide("accepted") });
-        this.addIconButton(controls, { icon: "x", label: "Decline suggestion", cls: "sm-decline", run: decide("declined") });
+        buttons.push(
+          this.addIconButton(controls, { icon: "check", label: "Accept suggestion", cls: "sm-accept", unavailable, run: decide("accepted") }),
+          this.addIconButton(controls, { icon: "x", label: "Decline suggestion", cls: "sm-decline", run: decide("declined") })
+        );
       } else if (!isOpen || suggestion?.result) {
         this.addIconButton(controls, { icon: "rotate-ccw", label: "Reopen suggestion", run: () => this.reopenThread(file, root, true) });
       }
@@ -696,7 +712,12 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
   /** A card with unsent text stays expanded even when another thread is selected. */
   private setPendingInput(card: HTMLElement, pending: boolean): void {
     card.toggleClass("sm-has-input", pending);
-    card.toggleClass("sm-expanded", pending || card.dataset.smId === this.focusedId);
+    this.setExpanded(card, pending || card.dataset.smId === this.focusedId);
+  }
+
+  private setExpanded(card: HTMLElement, expanded: boolean): void {
+    card.toggleClass("sm-expanded", expanded);
+    card.setAttr("aria-expanded", String(expanded));
   }
 
   private renderEntry(

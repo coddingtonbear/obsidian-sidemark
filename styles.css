@@ -509,3 +509,8 @@
 .sm-card.sm-has-input .sm-reply-box .sm-actions {
   display: flex;
 }
+
+.sm-card:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}

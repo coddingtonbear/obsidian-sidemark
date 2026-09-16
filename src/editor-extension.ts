@@ -115,6 +115,8 @@ export class AnchorTracker {
   private readonly suggestions = new Map<string, { replacement: string | null; original: string }>();
   /** Comments whose position is only a guess (ambiguous or weak fuzzy match) and must not be saved. */
   private readonly unconfirmed = new Set<string>();
+  /** Comments whose quote appears more than once with nothing to tell the copies apart. */
+  private readonly ambiguous = new Set<string>();
 
   constructor(
     readonly view: EditorView,
@@ -142,6 +144,7 @@ export class AnchorTracker {
     this.anchors = [];
     this.signatures.clear();
     this.unconfirmed.clear();
+    this.ambiguous.clear();
     this.decorations = Decoration.none;
     if (!notePath) return;
     this.subscribe();
@@ -158,6 +161,11 @@ export class AnchorTracker {
   /** Open suggestions that can still be accepted or declined, in document order. */
   openSuggestions(): TrackedAnchor[] {
     return this.anchors.filter((a) => this.suggestions.get(a.id)?.replacement != null);
+  }
+
+  /** Whether a comment's live position is only one of several identical passages. */
+  isAmbiguous(id: string): boolean {
+    return this.ambiguous.has(id);
   }
 
   /** The innermost open suggestion whose passage contains `pos` (its end included). */
@@ -319,8 +327,10 @@ export class AnchorTracker {
       this.signatures.set(root.id, signature);
       const r = resolveComment(root, text);
       this.unconfirmed.delete(root.id);
+      this.ambiguous.delete(root.id);
       if (r.kind !== "resolved") continue;
       next.push({ id: root.id, from: r.from, to: r.to });
+      if (r.ambiguous) this.ambiguous.add(root.id);
       if (r.ambiguous || (r.fuzzy && (r.similarity ?? 0) < PERSIST_MIN_SIMILARITY)) {
         this.unconfirmed.add(root.id);
         continue;
@@ -330,6 +340,7 @@ export class AnchorTracker {
     }
     for (const id of [...this.signatures.keys()]) if (!seen.has(id)) this.signatures.delete(id);
     for (const id of [...this.unconfirmed]) if (!seen.has(id)) this.unconfirmed.delete(id);
+    for (const id of [...this.ambiguous]) if (!seen.has(id)) this.ambiguous.delete(id);
     next.sort((a, b) => a.from - b.from);
     const changed = !sameAnchors(next, this.anchors);
     this.anchors = next;

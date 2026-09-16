@@ -278,6 +278,17 @@ describe("AnchorTracker", () => {
     vi.advanceTimersByTime(1000);
     await settle();
     expect(h.sidecar().comments[0].line).toBeUndefined();
+    expect(h.tracker.isAmbiguous("a")).toBe(true);
+  });
+
+  it("stops treating a quote as ambiguous once it's re-targeted", async () => {
+    const text = "fox one\nfox two\n";
+    const comment: Comment = { id: "a", author: "A", timestamp: ts, text: "x", resolved: false, selected_text: "fox" };
+    const h = new Harness(text, [comment]);
+    await settle();
+    await h.store.update(NOTE, (doc) => retarget(doc, "a", anchorFieldsFor(text, 8, 11)));
+    await settle();
+    expect(h.tracker.isAmbiguous("a")).toBe(false);
   });
 
   it("announces the thread under the cursor and marks its highlight active", async () => {

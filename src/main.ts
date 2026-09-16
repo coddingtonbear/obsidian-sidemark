@@ -51,7 +51,9 @@ interface AcceptPlan {
   thread: Comment[];
 }
 
-export type AcceptResult = { ok: true } | { ok: false; reason: SuggestionFailure | "no-editor" | "orphaned" | "changed" };
+export type AcceptResult =
+  | { ok: true }
+  | { ok: false; reason: SuggestionFailure | "no-editor" | "orphaned" | "changed" | "ambiguous" };
 
 export default class SidemarkPlugin extends Plugin implements EditorHost {
   settings: SidemarkSettings = DEFAULT_SETTINGS;
@@ -412,7 +414,8 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
   async resolveThreads(file: TFile): Promise<ResolvedThread[]> {
     const state = await this.store.load(file.path);
     const text = await this.noteText(file);
-    const tracked = new Map((this.trackerFor(file.path)?.anchors ?? []).map((a) => [a.id, a]));
+    const tracker = this.trackerFor(file.path);
+    const tracked = new Map((tracker?.anchors ?? []).map((a) => [a.id, a]));
     return buildThreads(state.doc).map((thread) => {
       const { root } = thread;
       const live = tracked.get(root.id);
@@ -422,7 +425,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
           kind: "resolved",
           from: live.from,
           to: live.to,
-          ambiguous: false,
+          ambiguous: tracker?.isAmbiguous(root.id) ?? false,
           fuzzy: text.slice(live.from, live.to) !== root.selected_text,
         };
       } else if (suggestionOf(root)?.result === "accepted") {
@@ -509,7 +512,12 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
         return;
       }
       const text = editor.getValue();
-      let range: { from: number; to: number } | null = this.trackerFor(file.path)?.anchors.find((a) => a.id === id) ?? null;
+      const tracker = this.trackerFor(file.path);
+      if (tracker?.isAmbiguous(id)) {
+        result.outcome = { ok: false, reason: "ambiguous" };
+        return;
+      }
+      let range: { from: number; to: number } | null = tracker?.anchors.find((a) => a.id === id) ?? null;
       if (!range) {
         const r = resolveComment(comment, text);
         range = r.kind === "resolved" && !r.ambiguous ? r : null;
