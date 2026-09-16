@@ -362,10 +362,56 @@
   display: none;
 }
 
+.sm-card {
+  interpolate-size: allow-keywords;
+  transition:
+    opacity 0.2s ease,
+    padding 0.2s ease,
+    margin 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
 .sm-card:not(.sm-expanded) {
   padding: 6px 8px;
   margin-bottom: 6px;
   cursor: pointer;
+}
+
+/* While a thread is selected, the others fade back. */
+.sm-sidebar:has(.sm-card.sm-expanded:not(.sm-draft)) .sm-card:not(.sm-expanded):not(:hover):not(:focus-within) {
+  opacity: 0.55;
+}
+
+/* The parts only an expanded card shows ease open and closed. */
+.sm-collapse {
+  height: auto;
+  overflow: hidden;
+  transition:
+    height 0.2s ease,
+    opacity 0.2s ease,
+    visibility 0.2s allow-discrete;
+}
+
+.sm-card:not(.sm-expanded) .sm-collapse {
+  height: 0;
+  opacity: 0;
+  visibility: hidden;
+}
+
+.sm-root-entry .sm-text,
+.sm-suggestion-diff {
+  max-height: max-content;
+  transition: max-height 0.2s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sm-card,
+  .sm-collapse,
+  .sm-root-entry .sm-text,
+  .sm-suggestion-diff {
+    transition: none;
+  }
 }
 
 .sm-card-header {
