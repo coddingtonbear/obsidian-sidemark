@@ -1,301 +1,317 @@
-import { Annotation, RangeSetBuilder, Transaction } from "@codemirror/state";
-import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
-import type CommentsPlugin from "./main";
-import {
-  changesTouchCommentBlock,
-  isFullReplace,
-  mapAnchors,
-  mergePendingAnchors,
-  shouldPreservePendingAnchors,
-  type TrackedAnchor,
-} from "./reanchor";
-import { makeAnchor, normalizeTrailingChanges, parseDocument, resolveAnchor, serializeDocument } from "./store";
+import { RangeSetBuilder, StateEffect } from "@codemirror/state";
+import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { editorInfoField } from "obsidian";
+import { applyTrackedPosition, PERSIST_MIN_SIMILARITY, resolveComment } from "./anchoring";
+import { buildThreads, type Comment } from "./model";
+import type { SidecarStore } from "./store";
 import { applyTableHighlights, rangesTouchTable } from "./table-highlight";
+import { isFullReplace, mapAnchors, type TrackedAnchor } from "./tracking";
 
-/** Markiert Transaktionen, die das Plugin selbst dispatcht (Block-Rewrite). */
-export const selfEdit = Annotation.define<boolean>();
+/** How long typing must pause before tracked positions are written to the sidecar. */
+const WRITE_DEBOUNCE_MS = 800;
 
-const REANCHOR_DEBOUNCE_MS = 800;
-const NORMALIZE_DEBOUNCE_MS = 500;
+/** Asks a tracker to rebuild its anchors from the store. */
+const resyncEffect = StateEffect.define<null>();
 
-export interface EditorExtensionHost {
-  settings: { schemaHint: boolean };
-  isApplyingSuggestion(): boolean;
-  openSidebar(id?: string): unknown;
+export interface EditorHost {
+  readonly store: SidecarStore;
+  openSidebar(focusId?: string): unknown;
+  /** Lets the sidebar read live anchor positions; returns an unregister function. */
+  registerTracker(tracker: AnchorTracker): () => void;
+  /** Tells the sidebar that anchor positions for a note changed materially. */
+  anchorsChanged(notePath: string): void;
+  /** The cursor moved into a comment's highlighted passage (`id`) or out of all of them (null). */
+  threadAtCursor(notePath: string, id: string | null): void;
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+/** The anchoring fields that, when changed by someone else, force a fresh resolution. */
+function anchorSignature(comment: Comment): string {
+  return JSON.stringify([
+    comment.line,
+    comment.end_line,
+    comment.start_column,
+    comment.end_column,
+    comment.selected_text,
+    comment.anchored_text,
+  ]);
 }
 
-function isOpenSuggestion(value: unknown): boolean {
-  if (!isObject(value) || value.status !== "open") return false;
-  const suggestion = value.suggestion;
-  return isObject(suggestion) && suggestion.result == null;
-}
-
-function isAcceptedSuggestion(value: unknown): boolean {
-  if (!isObject(value) || value.status !== "resolved") return false;
-  const suggestion = value.suggestion;
-  return isObject(suggestion) && suggestion.result === "accepted";
+function sameAnchors(a: TrackedAnchor[], b: TrackedAnchor[]): boolean {
+  return a.length === b.length && a.every((x, i) => x.id === b[i].id && x.from === b[i].from && x.to === b[i].to);
 }
 
 /**
- * Detects Undo/Redo transitions across an accepted suggestion from document
- * semantics rather than change-range shape. End-of-prose acceptance may be
- * coalesced into a single large range, indistinguishable from a full replace.
+ * Tracks the open comment anchors of the note shown in one editor: highlights
+ * them, maps them through every edit, and writes their fresh positions back to
+ * the sidecar once typing pauses.
  */
-export function isSuggestionAcceptanceHistoryUpdate(u: ViewUpdate, oldText: string, text: string): boolean {
-  if (!u.transactions.some((tr) => tr.isUserEvent("undo") || tr.isUserEvent("redo"))) return false;
-  const oldDoc = parseDocument(oldText);
-  const newDoc = parseDocument(text);
-  if (oldDoc.error || newDoc.error || oldDoc.prose === newDoc.prose) return false;
-  const ids = new Set([...Object.keys(oldDoc.comments), ...Object.keys(newDoc.comments)]);
-  for (const id of ids) {
-    const before = oldDoc.comments[id];
-    const after = newDoc.comments[id];
-    if (
-      (isOpenSuggestion(before) && (after === undefined || isAcceptedSuggestion(after))) ||
-      (isOpenSuggestion(after) && (before === undefined || isAcceptedSuggestion(before)))
-    ) {
-      return true;
-    }
+export class AnchorTracker {
+  decorations: DecorationSet = Decoration.none;
+  anchors: TrackedAnchor[] = [];
+  notePath: string | null = null;
+  private dirty = false;
+  private timer: number | null = null;
+  private unsubscribe: (() => void) | null = null;
+  private unregister: (() => void) | null = null;
+  private destroyed = false;
+  /** The thread whose passage contains the cursor, shown with a stronger highlight. */
+  private activeId: string | null = null;
+  /** Anchor signature of each comment as last seen in (or written to) the sidecar. */
+  private readonly signatures = new Map<string, string>();
+  /** Threads that are edit suggestions, highlighted differently. */
+  private readonly suggestions = new Set<string>();
+  /** Comments whose position is only a guess (ambiguous or weak fuzzy match) and must not be saved. */
+  private readonly unconfirmed = new Set<string>();
+
+  constructor(
+    readonly view: EditorView,
+    private readonly host: EditorHost
+  ) {
+    this.unregister = host.registerTracker(this);
+    this.attach(this.currentPath(), view.state.doc.toString());
+    this.scheduleTableHighlight();
   }
-  return false;
-}
 
-function editorAnchorTrackerClass(plugin: EditorExtensionHost) {
-  return (
-    class {
-      decorations: DecorationSet;
-      anchors: TrackedAnchor[] = [];
-      dirty = false;
-      timer: number | null = null;
-      normalizeTimer: number | null = null;
+  private currentPath(): string | null {
+    const file = this.view.state.field(editorInfoField, false)?.file;
+    return file && file.extension === "md" ? file.path : null;
+  }
 
-      constructor(readonly view: EditorView) {
-        this.syncFromDoc(view.state.doc.toString());
-        this.decorations = this.buildDecorations();
-        this.scheduleTableHighlight();
-        this.scheduleNormalize();
-      }
+  /**
+   * Points the tracker at a note; Obsidian reuses editors when a pane switches
+   * files. `previousText` is the document the current anchors refer to.
+   */
+  private attach(notePath: string | null, previousText: string): void {
+    this.flush(previousText);
+    this.unsubscribe?.();
+    this.unsubscribe = null;
+    this.notePath = notePath;
+    this.anchors = [];
+    this.signatures.clear();
+    this.unconfirmed.clear();
+    this.decorations = Decoration.none;
+    if (!notePath) return;
+    this.subscribe();
+    void this.host.store.load(notePath).then(() => this.requestResync());
+  }
 
-      destroy(): void {
-        if (this.timer !== null) window.clearTimeout(this.timer);
-        if (this.normalizeTimer !== null) window.clearTimeout(this.normalizeTimer);
-      }
+  private subscribe(): void {
+    this.unsubscribe?.();
+    this.unsubscribe = this.host.store.onChange((change) => {
+      if (change.notePath === this.notePath && change.origin !== "tracking") this.requestResync();
+    });
+  }
 
-      syncFromDoc(text: string): void {
-        const doc = parseDocument(text);
-        this.anchors = [];
-        this.dirty = false;
-        if (doc.error) return;
-        for (const [id, c] of Object.entries(doc.comments)) {
-          if (c.status === "resolved") continue;
-          const r = resolveAnchor(doc.prose, c.anchor);
-          if (r.kind === "resolved") this.anchors.push({ id, from: r.start, to: r.end });
-        }
-        this.anchors.sort((a, b) => a.from - b.from);
-      }
+  /** Follows a rename of the tracked note, keeping the live anchors. */
+  noteRenamed(newPath: string): void {
+    this.flush();
+    this.notePath = newPath;
+    this.subscribe();
+  }
 
-      update(u: ViewUpdate): void {
-        // Tabellen-Widgets entstehen/verschwinden auch bei Selektions- und
-        // Viewport-Wechseln (Cursor rein/raus), nicht nur bei Doc-Änderungen.
-        if (u.docChanged || u.selectionSet || u.viewportChanged) this.scheduleTableHighlight();
-        if (!u.docChanged) return;
-        this.scheduleNormalize();
-        const text = u.state.doc.toString();
-        const isSelf = u.transactions.some((tr) => tr.annotation(selfEdit));
-        const oldText = u.startState.doc.toString();
-        const oldProseLen = parseDocument(oldText).prose.length;
-        const newProseLen = parseDocument(text).prose.length;
-        const fullReplace = isFullReplace(u.changes);
-        const touchesBlock = changesTouchCommentBlock(u.changes, oldProseLen, newProseLen);
-        const acceptanceHistory = isSuggestionAcceptanceHistoryUpdate(u, oldText, text);
-        const preservePending = shouldPreservePendingAnchors(
-          u.changes,
-          oldProseLen,
-          plugin.isApplyingSuggestion() || acceptanceHistory
-        );
-        const pending =
-          (this.dirty || acceptanceHistory) && touchesBlock && preservePending
-            ? mapAnchors(this.anchors, u.changes).filter((anchor) => anchor.to <= newProseLen)
-            : [];
-        if (isSelf || fullReplace || touchesBlock) {
-          this.syncFromDoc(text);
-          if (pending.length > 0) {
-            const doc = parseDocument(text);
-            if (!doc.error) {
-              const recoverable = new Set(
-                Object.entries(doc.comments)
-                  .filter(
-                    ([, comment]) =>
-                      comment.status === "open" &&
-                      resolveAnchor(doc.prose, comment.anchor).kind === "orphaned"
-                  )
-                  .map(([id]) => id)
-              );
-              const merged = mergePendingAnchors(this.anchors, pending, recoverable);
-              if (merged.length > this.anchors.length) {
-                this.anchors = merged;
-                this.dirty = true;
-                this.scheduleReanchor();
-              }
-            }
-          }
+  private requestResync(): void {
+    if (this.destroyed) return;
+    // Store callbacks run outside CodeMirror updates, so dispatching here is safe.
+    this.view.dispatch({ effects: resyncEffect.of(null) });
+  }
+
+  destroy(): void {
+    this.flush();
+    this.destroyed = true;
+    this.unsubscribe?.();
+    this.unregister?.();
+  }
+
+  update(u: ViewUpdate): void {
+    if (u.docChanged || u.selectionSet || u.viewportChanged) this.scheduleTableHighlight();
+    const path = this.currentPath();
+    if (path !== this.notePath) {
+      this.attach(path, u.startState.doc.toString());
+      return;
+    }
+    if (!this.notePath) return;
+    const text = u.state.doc.toString();
+    const resync = u.transactions.some((tr) => tr.effects.some((e) => e.is(resyncEffect)));
+
+    if (u.docChanged) {
+      if (isFullReplace(u.changes)) {
+        this.resync(text, true);
+      } else {
+        const mapped = mapAnchors(this.anchors, u.changes);
+        const ranges: { from: number; to: number }[] = [];
+        u.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => ranges.push({ from: fromB, to: toB }));
+        if (rangesTouchTable(text, text.length, ranges)) {
+          // Obsidian reformats a whole table on edit, which collapses anchors
+          // inside it; recover those by their text instead of losing them.
+          const survived = new Set(mapped.map((a) => a.id));
+          this.anchors = mapped;
+          this.recoverMissing(text, survived);
         } else {
-          const ranges: { from: number; to: number }[] = [];
-          u.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
-            ranges.push({ from: fromB, to: toB });
-          });
-          if (rangesTouchTable(text, newProseLen, ranges)) {
-            // Tabellen-Edit: Positionen durch die Änderung mappen (Anker folgen
-            // echten Text-Edits wie in Prosa). Anker, die bei Obsidians Tabellen-
-            // Neuformatierung (Ganz-Block-Replace) kollabieren, per exaktem Text
-            // wiederherstellen statt sie zu verlieren. performReanchor schreibt nur
-            // um, wenn der exact-Text wirklich weg ist — schützt vor Korruption.
-            const mapped = mapAnchors(this.anchors, u.changes);
-            const survived = new Set(mapped.map((a) => a.id));
-            this.anchors = mapped;
-            const doc = parseDocument(text);
-            for (const [id, c] of Object.entries(doc.comments)) {
-              if (c.status === "resolved" || survived.has(id)) continue;
-              const r = resolveAnchor(doc.prose, c.anchor);
-              if (r.kind === "resolved") this.anchors.push({ id, from: r.start, to: r.end });
-            }
-            this.anchors.sort((a, b) => a.from - b.from);
-            this.dirty = true;
-            this.scheduleReanchor();
-          } else {
-            this.anchors = mapAnchors(this.anchors, u.changes);
-            this.dirty = true;
-            this.scheduleReanchor();
-          }
+          this.anchors = mapped;
         }
-        this.decorations = this.buildDecorations();
-      }
-
-      buildDecorations(): DecorationSet {
-        const b = new RangeSetBuilder<Decoration>();
-        const len = this.view.state.doc.length;
-        for (const a of this.anchors) {
-          if (a.from >= a.to || a.to > len) continue;
-          b.add(a.from, a.to, Decoration.mark({ class: "tc-highlight", attributes: { "data-tc-id": a.id } }));
-        }
-        return b.finish();
-      }
-
-      /**
-       * Highlights innerhalb gerenderter Tabellen-Widgets müssen direkt ins DOM
-       * geschrieben werden (CM-mark-Dekorationen werden dort verschluckt). Das
-       * läuft in der Measure-/Write-Phase, nachdem Obsidian die Widgets gebaut hat.
-       */
-      scheduleTableHighlight(): void {
-        this.view.requestMeasure({
-          key: "tc-table-highlight",
-          read: () => null,
-          write: () => {
-            const text = this.view.state.doc.toString();
-            const proseLen = parseDocument(text).prose.length;
-            applyTableHighlights(this.view, this.anchors, text, proseLen, (id) => void plugin.openSidebar(id));
-          },
-        });
-      }
-
-      scheduleNormalize(): void {
-        if (this.normalizeTimer !== null) window.clearTimeout(this.normalizeTimer);
-        this.normalizeTimer = window.setTimeout(() => {
-          this.normalizeTimer = null;
-          this.performNormalize();
-        }, NORMALIZE_DEBOUNCE_MS);
-      }
-
-      /**
-       * Faltet Inhalt hinter dem Block (getippte Prosa, Fußnoten-Definitionen)
-       * zurück vor den Block, damit der Block das letzte Element der Datei bleibt —
-       * sonst landet der Text im nicht kommentierbaren trailing-Bereich.
-       */
-      performNormalize(): void {
-        // Ausstehendes Reanchor zuerst verarbeiten: syncFromDoc (via update()) baut
-        // die Anker sonst aus dem noch nicht umgeschriebenen Block neu auf und der
-        // gerade bearbeitete Anker geht verloren, das spätere Reanchor no-opt dann.
-        if (this.dirty) this.performReanchor();
-        const text = this.view.state.doc.toString();
-        const changes = normalizeTrailingChanges(text, parseDocument(text));
-        if (!changes) return;
-        this.view.dispatch({
-          changes,
-          annotations: [selfEdit.of(true), Transaction.addToHistory.of(false)],
-        });
-      }
-
-      scheduleReanchor(): void {
-        if (this.timer !== null) window.clearTimeout(this.timer);
-        this.timer = window.setTimeout(() => {
-          this.timer = null;
-          this.performReanchor();
-        }, REANCHOR_DEBOUNCE_MS);
-      }
-
-      /**
-       * Schreibt nach editierter Prosa die aktuellen Zitate/Kontexte der noch
-       * lebenden Anker zurück in den Block (nur die Block-Region wird ersetzt).
-       */
-      performReanchor(): void {
-        if (!this.dirty) return;
-        this.dirty = false;
-        const text = this.view.state.doc.toString();
-        const doc = parseDocument(text);
-        if (doc.error || Object.keys(doc.comments).length === 0) return;
-        let changed = false;
-        for (const t of this.anchors) {
-          const c = doc.comments[t.id];
-          if (!c || c.status === "resolved") continue;
-          if (t.to > doc.prose.length) continue;
-          const cur = c.anchor;
-          // Nur umschreiben, wenn der bisherige exact-Text nicht mehr auffindbar
-          // ist (= echte Bearbeitung des Zitats). Ist er noch da, war die Änderung
-          // nur drumherum (z.B. Obsidians Tabellen-Neuformatierung) — ein Rewrite
-          // aus evtl. verschobenen Positionen würde den Anker korrumpieren.
-          if (resolveAnchor(doc.prose, cur).kind === "resolved") continue;
-          const next = makeAnchor(doc.prose, t.from, t.to);
-          if (
-            next.exact &&
-            (next.exact !== cur.exact ||
-              next.prefix !== cur.prefix ||
-              next.suffix !== cur.suffix ||
-              next.pos !== cur.pos)
-          ) {
-            c.anchor = next;
-            changed = true;
-          }
-        }
-        if (!changed) return;
-        const serialized = serializeDocument(doc, plugin.settings.schemaHint);
-        this.view.dispatch({
-          changes: { from: doc.prose.length, to: text.length, insert: serialized.slice(doc.prose.length) },
-          annotations: [selfEdit.of(true), Transaction.addToHistory.of(false)],
-        });
+        this.markDirty();
       }
     }
-  );
+    if (resync) {
+      this.resync(text, false);
+      this.scheduleTableHighlight();
+    }
+    if (u.selectionSet || u.docChanged || resync) this.updateActive(u.state.selection.main.head, u.selectionSet);
+    this.decorations = this.buildDecorations(u.state.doc.length);
+  }
+
+  /**
+   * Finds the innermost highlighted passage containing `pos` and announces it
+   * when it changes. A cursor move outside every passage is always announced,
+   * so a thread selected by clicking its card is deselected too.
+   */
+  private updateActive(pos: number, moved: boolean): void {
+    let best: TrackedAnchor | null = null;
+    for (const a of this.anchors) {
+      if (pos < a.from || pos > a.to) continue;
+      if (!best || a.to - a.from < best.to - best.from) best = a;
+    }
+    const id = best?.id ?? null;
+    if (id === this.activeId && !(id === null && moved)) return;
+    this.activeId = id;
+    if (this.notePath) this.host.threadAtCursor(this.notePath, id);
+  }
+
+  private openRoots(): Comment[] {
+    const state = this.notePath ? this.host.store.peek(this.notePath) : undefined;
+    if (!state) return [];
+    return buildThreads(state.doc)
+      .map((thread) => thread.root)
+      .filter((root) => !root.resolved);
+  }
+
+  private recoverMissing(text: string, present: Set<string>): void {
+    for (const root of this.openRoots()) {
+      if (present.has(root.id)) continue;
+      const r = resolveComment(root, text);
+      if (r.kind === "resolved") this.anchors.push({ id: root.id, from: r.from, to: r.to });
+    }
+    this.anchors.sort((a, b) => a.from - b.from);
+  }
+
+  /**
+   * Rebuilds anchors from the store. Comments whose anchoring fields are
+   * unchanged keep their live positions (more current than the file); new or
+   * externally re-targeted comments are resolved from scratch.
+   */
+  private resync(text: string, force: boolean): void {
+    const previous = new Map(this.anchors.map((a) => [a.id, a]));
+    const next: TrackedAnchor[] = [];
+    let moved = false;
+    const seen = new Set<string>();
+    this.suggestions.clear();
+    for (const root of this.openRoots()) {
+      seen.add(root.id);
+      if (root.x_suggestion !== undefined) this.suggestions.add(root.id);
+      const signature = anchorSignature(root);
+      const live = previous.get(root.id);
+      if (!force && live && this.signatures.get(root.id) === signature) {
+        next.push(live);
+        continue;
+      }
+      this.signatures.set(root.id, signature);
+      const r = resolveComment(root, text);
+      this.unconfirmed.delete(root.id);
+      if (r.kind !== "resolved") continue;
+      next.push({ id: root.id, from: r.from, to: r.to });
+      if (r.ambiguous || (r.fuzzy && (r.similarity ?? 0) < PERSIST_MIN_SIMILARITY)) {
+        this.unconfirmed.add(root.id);
+        continue;
+      }
+      const probe: Comment = { ...root };
+      if (applyTrackedPosition(probe, text, r.from, r.to)) moved = true;
+    }
+    for (const id of [...this.signatures.keys()]) if (!seen.has(id)) this.signatures.delete(id);
+    for (const id of [...this.unconfirmed]) if (!seen.has(id)) this.unconfirmed.delete(id);
+    next.sort((a, b) => a.from - b.from);
+    const changed = !sameAnchors(next, this.anchors);
+    this.anchors = next;
+    // Positions found by resolution (e.g. after the note changed on disk) are persisted too.
+    if (moved) this.markDirty();
+    if (changed && this.notePath) this.host.anchorsChanged(this.notePath);
+  }
+
+  private markDirty(): void {
+    this.dirty = true;
+    if (this.timer !== null) window.clearTimeout(this.timer);
+    this.timer = window.setTimeout(() => {
+      this.timer = null;
+      this.flush();
+    }, WRITE_DEBOUNCE_MS);
+  }
+
+  /**
+   * Writes pending positions now (also used before switching notes or
+   * closing). `text` must be the document the anchors refer to.
+   */
+  flush(text: string = this.view.state.doc.toString()): void {
+    if (this.timer !== null) {
+      window.clearTimeout(this.timer);
+      this.timer = null;
+    }
+    if (!this.dirty || !this.notePath || this.destroyed) return;
+    this.dirty = false;
+    const notePath = this.notePath;
+    const anchors = this.anchors.filter((a) => !this.unconfirmed.has(a.id));
+    const expected = new Map(anchors.map((a) => [a.id, this.signatures.get(a.id)]));
+    void this.host.store
+      .update(
+        notePath,
+        (doc) => {
+          for (const anchor of anchors) {
+            const comment = doc.comments.find((c) => c.id === anchor.id);
+            if (!comment || comment.resolved) continue;
+            // Someone else re-targeted this comment since we last looked; their change wins.
+            const signature = anchorSignature(comment);
+            const current = this.notePath === notePath ? this.signatures.get(anchor.id) : undefined;
+            if (signature !== expected.get(anchor.id) && signature !== current) continue;
+            applyTrackedPosition(comment, text, anchor.from, anchor.to);
+            if (this.notePath === notePath) this.signatures.set(comment.id, anchorSignature(comment));
+          }
+        },
+        "tracking"
+      )
+      .then(() => this.host.anchorsChanged(notePath));
+  }
+
+  private buildDecorations(length: number): DecorationSet {
+    const builder = new RangeSetBuilder<Decoration>();
+    for (const a of this.anchors) {
+      if (a.from >= a.to || a.to > length) continue;
+      let cls = "sm-highlight";
+      if (this.suggestions.has(a.id)) cls += " sm-highlight-suggestion";
+      if (a.id === this.activeId) cls += " sm-highlight-active";
+      builder.add(a.from, a.to, Decoration.mark({ class: cls, attributes: { "data-sm-id": a.id } }));
+    }
+    return builder.finish();
+  }
+
+  /** Live Preview renders tables as widgets that swallow mark decorations, so those highlights are drawn into the DOM directly. */
+  private scheduleTableHighlight(): void {
+    this.view.requestMeasure({
+      key: "sm-table-highlight",
+      read: () => null,
+      write: () => {
+        const text = this.view.state.doc.toString();
+        applyTableHighlights(this.view, this.anchors, text, text.length, (id) => void this.host.openSidebar(id));
+      },
+    });
+  }
 }
 
-export function createEditorAnchorTracker(view: EditorView, plugin: EditorExtensionHost) {
-  const Tracker = editorAnchorTrackerClass(plugin);
-  return new Tracker(view);
-}
-
-export function buildEditorExtension(plugin: CommentsPlugin) {
-  return ViewPlugin.fromClass(editorAnchorTrackerClass(plugin), {
-    decorations: (v) => v.decorations,
+export function buildEditorExtension(host: EditorHost) {
+  return ViewPlugin.define((view) => new AnchorTracker(view, host), {
+    decorations: (tracker) => tracker.decorations,
     eventHandlers: {
-      mousedown(e: MouseEvent) {
-        const target = e.target as HTMLElement;
-        const el = target.closest?.(".tc-highlight");
-        if (!el) return false;
-        const id = el.getAttribute("data-tc-id");
-        if (id) void plugin.openSidebar(id);
+      mousedown(event: MouseEvent) {
+        const target = event.target instanceof Element ? event.target.closest(".sm-highlight") : null;
+        const id = target?.getAttribute("data-sm-id");
+        if (id) void host.openSidebar(id);
         return false;
       },
     },

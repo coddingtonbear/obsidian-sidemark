@@ -1,255 +1,195 @@
+import { parseSidecarContent } from "@mrsf/cli/browser";
 import { describe, expect, it } from "vitest";
-import { normalizeTrailingChanges, parseDocument, resolveAnchor, serializeDocument, SCHEMA_HINT_LINES } from "../src/store";
-import type { CommentMap } from "../src/types";
+import { addComment } from "../src/mutations";
+import { type SidecarIO, SidecarStore, type StoreChange } from "../src/store";
 
-const COMMENTS: CommentMap = {
-  a1f3: {
-    anchor: { exact: "aggressiv senken", prefix: "den Preis ", suffix: " im Q3", pos: 22 },
-    status: "open",
-    thread: [{ author: "Leon", ts: "2026-06-10T10:24:00Z", text: "Zu hart?" }],
-  },
-};
-
-function block(json: string, hint = true): string {
-  const hintStr = hint ? SCHEMA_HINT_LINES.join("\n") + "\n" : "";
-  return "```tandem-comments\n" + hintStr + json + "\n```\n";
+class MemoryIO implements SidecarIO {
+  files = new Map<string, string>();
+  writes = 0;
+  async read(path: string) {
+    await Promise.resolve();
+    return this.files.get(path) ?? null;
+  }
+  async exists(path: string) {
+    return this.files.has(path);
+  }
+  async write(path: string, content: string) {
+    this.writes++;
+    this.files.set(path, content);
+  }
+  async remove(path: string) {
+    this.files.delete(path);
+  }
+  async rename(from: string, to: string) {
+    const content = this.files.get(from);
+    if (content === undefined) throw new Error("missing");
+    this.files.delete(from);
+    this.files.set(to, content);
+  }
 }
 
-describe("parseDocument", () => {
-  it("returns whole file as prose when no block exists", () => {
-    const raw = "# Titel\n\nWir senken den Preis.\n";
-    expect(parseDocument(raw)).toEqual({ prose: raw, comments: {} });
+const entry = (id: string) => ({ id, author: "Adam", timestamp: "2026-09-16T10:00:00Z", text: "hello" });
+const anchor = { selected_text: "x", line: 1, end_line: 1, start_column: 0, end_column: 1 };
+
+function setup() {
+  const io = new MemoryIO();
+  const store = new SidecarStore(io);
+  const changes: StoreChange[] = [];
+  store.onChange((c) => changes.push(c));
+  return { io, store, changes };
+}
+
+describe("SidecarStore", () => {
+  it("creates the sidecar on the first comment and deletes it with the last", async () => {
+    const { io, store, changes } = setup();
+    expect((await store.load("dir/Note.md")).doc.comments).toEqual([]);
+    await store.update("dir/Note.md", (doc) => addComment(doc, entry("a"), anchor));
+    const written = parseSidecarContent(io.files.get("dir/Note.md.review.yaml") ?? "");
+    expect(written).toMatchObject({ mrsf_version: "1.0", document: "dir/Note.md", comments: [{ id: "a" }] });
+    await store.update("dir/Note.md", (doc) => {
+      doc.comments = [];
+    });
+    expect(io.files.has("dir/Note.md.review.yaml")).toBe(false);
+    expect(changes.map((c) => c.origin)).toEqual(["local", "local"]);
   });
 
-  it("splits prose and comments when block exists", () => {
-    const prose = "Wir sollten den Preis aggressiv senken im Q3.";
-    const raw = prose + "\n" + block(JSON.stringify(COMMENTS, null, 2));
-    const doc = parseDocument(raw);
-    expect(doc.prose).toBe(prose);
-    expect(doc.comments).toEqual(COMMENTS);
-    expect(doc.error).toBeUndefined();
+  it("re-reads the file before each update so outside edits survive", async () => {
+    const { io, store } = setup();
+    await store.update("Note.md", (doc) => addComment(doc, entry("a"), anchor));
+    io.files.set(
+      "Note.md.review.yaml",
+      (io.files.get("Note.md.review.yaml") ?? "") +
+        "  - id: agent\n    author: Claude\n    timestamp: '2026-09-16T11:00:00Z'\n    text: from outside\n    resolved: false\n"
+    );
+    await store.update("Note.md", (doc) => addComment(doc, entry("b"), anchor));
+    expect(store.peek("Note.md")?.doc.comments.map((c) => c.id)).toEqual(["a", "agent", "b"]);
   });
 
-  it("ignores // hint lines before the JSON", () => {
-    const raw = "Text.\n" + block(JSON.stringify(COMMENTS, null, 2), true);
-    expect(parseDocument(raw).comments).toEqual(COMMENTS);
+  it("refuses to write over a sidecar it can't fully parse", async () => {
+    const { io, store } = setup();
+    io.files.set("Note.md.review.yaml", "mrsf_version: '1.0'\ncomments: not-a-list\n");
+    const result = await store.update("Note.md", (doc) => addComment(doc, entry("a"), anchor));
+    expect(result.ok).toBe(false);
+    expect(io.files.get("Note.md.review.yaml")).toBe("mrsf_version: '1.0'\ncomments: not-a-list\n");
+    expect(store.peek("Note.md")?.error).toBeTruthy();
   });
 
-  it("parses a block without hint lines", () => {
-    const raw = "Text.\n" + block(JSON.stringify(COMMENTS, null, 2), false);
-    expect(parseDocument(raw).comments).toEqual(COMMENTS);
+  it("skips writing when nothing changed", async () => {
+    const { io, store } = setup();
+    await store.update("Note.md", (doc) => addComment(doc, entry("a"), anchor));
+    const writes = io.writes;
+    await store.update("Note.md", () => undefined);
+    expect(io.writes).toBe(writes);
   });
 
-  it("sets error and keeps raw as prose when JSON is broken", () => {
-    const raw = "Text.\n```tandem-comments\n{ kaputt\n```\n";
-    const doc = parseDocument(raw);
-    expect(doc.error).toBeTruthy();
-    expect(doc.prose).toBe(raw);
-    expect(doc.comments).toEqual({});
+  it("ignores its own writes but reports outside changes", async () => {
+    const { io, store, changes } = setup();
+    await store.update("Note.md", (doc) => addComment(doc, entry("a"), anchor));
+    await store.sidecarChanged("Note.md");
+    expect(changes.map((c) => c.origin)).toEqual(["local"]);
+    io.files.set("Note.md.review.yaml", (io.files.get("Note.md.review.yaml") ?? "").replace("hello", "edited"));
+    await store.sidecarChanged("Note.md");
+    expect(changes.map((c) => c.origin)).toEqual(["local", "external"]);
+    expect(store.peek("Note.md")?.doc.comments[0].text).toBe("edited");
   });
 
-  it("handles a file that is only a block (empty prose)", () => {
-    const raw = block(JSON.stringify(COMMENTS, null, 2));
-    const doc = parseDocument(raw);
-    expect(doc.prose).toBe("");
-    expect(doc.comments).toEqual(COMMENTS);
+  it("moves the sidecar with a renamed note and updates document", async () => {
+    const { io, store } = setup();
+    await store.update("Old.md", (doc) => addComment(doc, entry("a"), anchor));
+    await store.noteRenamed("Old.md", "folder/New.md");
+    expect(io.files.has("Old.md.review.yaml")).toBe(false);
+    expect(parseSidecarContent(io.files.get("folder/New.md.review.yaml") ?? "").document).toBe("folder/New.md");
   });
 
-  // Issue #2: Obsidian hängt Fußnoten-Definitionen ans Dateiende — hinter den Block.
-  it("parses the block when footnote definitions follow it (issue #2)", () => {
-    const prose = "Wir sollten den Preis aggressiv senken im Q3.[^1]";
-    const raw = prose + "\n" + block(JSON.stringify(COMMENTS, null, 2)) + "\n[^1]: Quelle: Pricing-Memo\n";
-    const doc = parseDocument(raw);
-    expect(doc.error).toBeUndefined();
-    expect(doc.prose).toBe(prose);
-    expect(doc.comments).toEqual(COMMENTS);
+  it("doesn't clobber an existing sidecar at the rename target", async () => {
+    const { io, store } = setup();
+    await store.update("Old.md", (doc) => addComment(doc, entry("a"), anchor));
+    io.files.set("New.md.review.yaml", "existing");
+    expect(await store.noteRenamed("Old.md", "New.md")).toBe("conflict");
+    expect(io.files.get("New.md.review.yaml")).toBe("existing");
+    expect(io.files.has("Old.md.review.yaml")).toBe(true);
   });
 
-  it("round-trips byte-exact when footnotes follow the block", () => {
+  it("does nothing for notes without a sidecar", async () => {
+    const { io, store } = setup();
+    await store.noteRenamed("Old.md", "New.md");
+    expect(io.files.size).toBe(0);
+  });
+
+  it("fixes document when the sidecar already moved with its folder", async () => {
+    const { io, store } = setup();
+    await store.update("a/Note.md", (doc) => addComment(doc, entry("x"), anchor));
+    await io.rename("a/Note.md.review.yaml", "b/Note.md.review.yaml");
+    expect(await store.noteRenamed("a/Note.md", "b/Note.md", true)).toBe("updated");
+    expect(parseSidecarContent(io.files.get("b/Note.md.review.yaml") ?? "").document).toBe("b/Note.md");
+  });
+
+  it("leaves a stale sidecar alone when the renamed note had none", async () => {
+    const { io, store } = setup();
+    await store.update("Stale.md", (doc) => addComment(doc, entry("s"), anchor));
+    const stale = io.files.get("Stale.md.review.yaml");
+    expect(await store.noteRenamed("Old.md", "Stale.md")).toBe("none");
+    expect(io.files.get("Stale.md.review.yaml")).toBe(stale);
+  });
+
+  it("applies overlapping renames in order (a swap through a temporary name)", async () => {
+    const { io, store } = setup();
+    await store.update("A.md", (doc) => addComment(doc, entry("from-a"), anchor));
+    await store.update("B.md", (doc) => addComment(doc, entry("from-b"), anchor));
+    await Promise.all([
+      store.noteRenamed("A.md", "tmp.md"),
+      store.noteRenamed("B.md", "A.md"),
+      store.noteRenamed("tmp.md", "B.md"),
+    ]);
+    expect(parseSidecarContent(io.files.get("A.md.review.yaml") ?? "")).toMatchObject({ document: "A.md", comments: [{ id: "from-b" }] });
+    expect(parseSidecarContent(io.files.get("B.md.review.yaml") ?? "")).toMatchObject({ document: "B.md", comments: [{ id: "from-a" }] });
+    expect(io.files.has("tmp.md.review.yaml")).toBe(false);
+  });
+
+  it("applies a quick chain of renames in order", async () => {
+    const { io, store } = setup();
+    await store.update("A.md", (doc) => addComment(doc, entry("a"), anchor));
+    await Promise.all([store.noteRenamed("A.md", "B.md"), store.noteRenamed("B.md", "C.md")]);
+    expect([...io.files.keys()]).toEqual(["C.md.review.yaml"]);
+    expect(parseSidecarContent(io.files.get("C.md.review.yaml") ?? "").document).toBe("C.md");
+  });
+
+  it("treats duplicate comment ids as unreadable rather than risk overwriting one", async () => {
+    const { io, store } = setup();
     const raw =
-      "Text[^1]\n" + block(JSON.stringify(COMMENTS, null, 2)) + "\n[^1]: Fußnote\n[^2]: noch eine\n";
-    const doc = parseDocument(raw);
-    expect(doc.comments).toEqual(COMMENTS);
-    expect(serializeDocument(doc, true)).toBe(raw);
+      "mrsf_version: '1.0'\ndocument: Note.md\ncomments:\n" +
+      "  - {id: x, author: A, timestamp: '2026-01-01T00:00:00Z', text: first, resolved: false}\n" +
+      "  - {id: x, author: B, timestamp: '2026-01-01T00:00:00Z', text: second, resolved: false}\n";
+    io.files.set("Note.md.review.yaml", raw);
+    expect((await store.update("Note.md", () => undefined)).ok).toBe(false);
+    expect(io.files.get("Note.md.review.yaml")).toBe(raw);
   });
 
-  it("finds its own closing fence when a code block follows in the trailing content", () => {
-    const raw = "Text\n" + block(JSON.stringify(COMMENTS, null, 2)) + "\n[^1]: siehe\n\n```js\nfoo()\n```\n";
-    const doc = parseDocument(raw);
-    expect(doc.error).toBeUndefined();
-    expect(doc.prose).toBe("Text");
-    expect(doc.comments).toEqual(COMMENTS);
-    expect(serializeDocument(doc, true)).toBe(raw);
+  it("treats an empty sidecar file as having no comments", async () => {
+    const { io, store } = setup();
+    io.files.set("Note.md.review.yaml", "");
+    expect((await store.update("Note.md", (doc) => addComment(doc, entry("a"), anchor))).ok).toBe(true);
+    expect(parseSidecarContent(io.files.get("Note.md.review.yaml") ?? "").comments).toHaveLength(1);
   });
 
-  it("sets error (not silent blank) when JSON is broken and footnotes follow", () => {
-    const raw = "Text\n```tandem-comments\n{ kaputt\n```\n[^1]: Fußnote\n";
-    const doc = parseDocument(raw);
-    expect(doc.error).toBeTruthy();
-    expect(doc.prose).toBe(raw);
-    expect(doc.comments).toEqual({});
+  it("keeps the sidecar when the deleted note has already come back", async () => {
+    const { io, store } = setup();
+    await store.update("Note.md", (doc) => addComment(doc, entry("a"), anchor));
+    io.files.set("Note.md", "restored");
+    await store.noteDeleted("Note.md");
+    expect(io.files.has("Note.md.review.yaml")).toBe(true);
   });
 
-  it("parses a hand-written block as Claude would author it", () => {
-    const raw = [
-      "Wir sollten den Preis aggressiv senken im Q3.",
-      "```tandem-comments",
-      '// Schema: { "<id>": { anchor:{exact,prefix,suffix,pos?}, status:open|resolved, thread:[{author,ts,text}] } }',
-      '// Anchor = quote from the prose. To locate: search for "exact", disambiguate via prefix/suffix.',
-      "{",
-      '  "7c2e": {',
-      '    "anchor": { "exact": "aggressiv senken", "prefix": "den Preis ", "suffix": " im Q3", "pos": 22 },',
-      '    "status": "open",',
-      '    "thread": [{ "author": "Claude", "ts": "2026-06-10T12:00:00Z", "text": "Vorschlag: gezielt nachschärfen." }]',
-      "  }",
-      "}",
-      "```",
-      "",
-    ].join("\n");
-    const doc = parseDocument(raw);
-    expect(doc.error).toBeUndefined();
-    expect(doc.prose).toBe("Wir sollten den Preis aggressiv senken im Q3.");
-    expect(resolveAnchor(doc.prose, doc.comments["7c2e"].anchor)).toEqual({ kind: "resolved", start: 22, end: 38 });
-  });
-});
-
-describe("serializeDocument", () => {
-  it("returns prose byte-exact when no comments exist", () => {
-    const prose = "Kein Newline am Ende";
-    expect(serializeDocument({ prose, comments: {} }, true)).toBe(prose);
+  it("deletes the sidecar with its note", async () => {
+    const { io, store } = setup();
+    await store.update("Note.md", (doc) => addComment(doc, entry("a"), anchor));
+    await store.noteDeleted("Note.md");
+    expect(io.files.size).toBe(0);
   });
 
-  it("round-trips byte-exact (parse → serialize → parse)", () => {
-    for (const prose of ["Ohne Newline", "Mit Newline\n", "Mehrere\n\n\n", ""]) {
-      const out = serializeDocument({ prose, comments: COMMENTS }, true);
-      const doc = parseDocument(out);
-      expect(doc.prose).toBe(prose);
-      expect(doc.comments).toEqual(COMMENTS);
-      expect(serializeDocument(doc, true)).toBe(out);
-    }
-  });
-
-  it("add + remove all comments restores the original file byte-exact", () => {
-    const original = "Prosa ohne trailing newline";
-    const withComments = serializeDocument({ prose: original, comments: COMMENTS }, true);
-    const doc = parseDocument(withComments);
-    expect(serializeDocument({ prose: doc.prose, comments: {} }, true)).toBe(original);
-  });
-
-  it("omits hint lines when schemaHint is false", () => {
-    const out = serializeDocument({ prose: "X", comments: COMMENTS }, false);
-    expect(out).not.toContain("// Schema");
-    expect(parseDocument(out).comments).toEqual(COMMENTS);
-  });
-
-  it("never emits a bare ``` line from comment text (JSON escapes newlines)", () => {
-    const comments: CommentMap = {
-      x1: {
-        anchor: { exact: "A" },
-        status: "open",
-        thread: [{ author: "Leon", ts: "2026-06-10T00:00:00Z", text: "Code:\n```\nfoo\n```\nEnde" }],
-      },
-    };
-    const out = serializeDocument({ prose: "A B C", comments }, true);
-    const doc = parseDocument(out);
-    expect(doc.comments).toEqual(comments);
-    expect(doc.prose).toBe("A B C");
-  });
-
-  it("keeps trailing footnotes when the last comment is removed", () => {
-    const raw = "Text[^1]\n" + block(JSON.stringify(COMMENTS, null, 2)) + "\n[^1]: Fußnote\n";
-    const doc = parseDocument(raw);
-    expect(serializeDocument({ ...doc, comments: {} }, true)).toBe("Text[^1]\n[^1]: Fußnote\n");
-  });
-
-  it("restores the separator supplied by the closing fence before trailing content", () => {
-    const raw = "Text[^1]\n" + block(JSON.stringify(COMMENTS, null, 2)) + "[^1]: Fußnote\n";
-    const doc = parseDocument(raw);
-    expect(doc.trailing).toBe("[^1]: Fußnote\n");
-    expect(serializeDocument({ ...doc, comments: {} }, true)).toBe("Text[^1]\n[^1]: Fußnote\n");
-  });
-
-  it("throws when asked to serialize a doc with parse error", () => {
-    expect(() => serializeDocument({ prose: "x", comments: {}, error: "kaputt" }, true)).toThrow();
-  });
-});
-
-describe("normalizeTrailingChanges", () => {
-  // Wendet CM-artige Simultan-Änderungen (Koordinaten im Original) auf einen String an.
-  function applyChanges(raw: string, changes: { from: number; to: number; insert: string }[]): string {
-    let out = raw;
-    for (const c of [...changes].sort((a, b) => b.from - a.from)) {
-      out = out.slice(0, c.from) + c.insert + out.slice(c.to);
-    }
-    return out;
-  }
-
-  function normalize(raw: string): string | null {
-    const changes = normalizeTrailingChanges(raw, parseDocument(raw));
-    return changes ? applyChanges(raw, changes) : null;
-  }
-
-  it("folds prose typed after the block back in front of it", () => {
-    const prose = "Wir sollten den Preis aggressiv senken im Q3.";
-    const raw = prose + "\n" + block(JSON.stringify(COMMENTS, null, 2)) + "Neuer Satz.\n";
-    const result = normalize(raw)!;
-    const doc = parseDocument(result);
-    expect(doc.prose).toBe(prose + "\nNeuer Satz.");
-    expect(doc.comments).toEqual(COMMENTS);
-    expect(doc.trailing ?? "").toBe("");
-    // Idempotent: das Ergebnis ist kanonisch.
-    expect(normalizeTrailingChanges(result, parseDocument(result))).toBeNull();
-  });
-
-  it("folds trailing text that has no final newline", () => {
-    const raw = "Prosa.\n" + block(JSON.stringify(COMMENTS, null, 2)) + "test";
-    const doc = parseDocument(normalize(raw)!);
-    expect(doc.prose).toBe("Prosa.\ntest");
-    expect(doc.comments).toEqual(COMMENTS);
-  });
-
-  it("folds footnote definitions too (block stays last)", () => {
-    const raw = "Text.[^1]\n" + block(JSON.stringify(COMMENTS, null, 2)) + "[^1]: Definition\n";
-    const doc = parseDocument(normalize(raw)!);
-    expect(doc.prose).toBe("Text.[^1]\n[^1]: Definition");
-    expect(doc.trailing ?? "").toBe("");
-  });
-
-  it("handles a file that starts with the block (empty prose)", () => {
-    const raw = block(JSON.stringify(COMMENTS, null, 2)) + "test\n";
-    const result = normalize(raw)!;
-    const doc = parseDocument(result);
-    expect(doc.prose).toBe("test");
-    expect(doc.comments).toEqual(COMMENTS);
-    expect(result.startsWith("\n")).toBe(false);
-  });
-
-  it("folds a trailing fenced code block back in front of the block", () => {
-    const raw = "Prosa.\n" + block(JSON.stringify(COMMENTS, null, 2)) + "```js\ncode()\n```\n";
-    const result = normalize(raw)!;
-    const doc = parseDocument(result);
-    expect(doc.prose).toBe("Prosa.\n```js\ncode()\n```");
-    expect(doc.comments).toEqual(COMMENTS);
-    expect(doc.trailing ?? "").toBe("");
-  });
-
-  it("returns null when there is no trailing content", () => {
-    const raw = "Prosa.\n" + block(JSON.stringify(COMMENTS, null, 2));
-    expect(normalizeTrailingChanges(raw, parseDocument(raw))).toBeNull();
-  });
-
-  it("returns null for whitespace-only trailing", () => {
-    const raw = "Prosa.\n" + block(JSON.stringify(COMMENTS, null, 2)) + "\n\n  \n";
-    expect(normalizeTrailingChanges(raw, parseDocument(raw))).toBeNull();
-  });
-
-  it("returns null when the block has a parse error", () => {
-    const raw = "Prosa.\n```tandem-comments\n{ kaputt\n```\ntest\n";
-    expect(normalizeTrailingChanges(raw, parseDocument(raw))).toBeNull();
-  });
-
-  it("returns null when there is no block at all", () => {
-    const raw = "Nur Prosa.\n";
-    expect(normalizeTrailingChanges(raw, parseDocument(raw))).toBeNull();
+  it("serializes concurrent updates", async () => {
+    const { store } = setup();
+    await Promise.all(["a", "b", "c"].map((id) => store.update("Note.md", (doc) => addComment(doc, entry(id), anchor))));
+    expect(store.peek("Note.md")?.doc.comments.map((c) => c.id)).toEqual(["a", "b", "c"]);
   });
 });

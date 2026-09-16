@@ -1,413 +1,203 @@
-import { ChangeSet } from "@codemirror/state";
-import { mapAnchors } from "./reanchor";
-import type {
-  Anchor,
-  AnchorResolution,
-  CommentMap,
-  CommentStatus,
-  ParsedDoc,
-  ResolvedComment,
-  SuggestionResult,
-  ThreadEntry,
-} from "./types";
+import { parseSidecarContentLenient } from "@mrsf/cli/browser";
+import { emptyDocument, type MrsfDocument } from "./model";
+import { sidecarPathFor } from "./sidecar-path";
+import { serializeSidecar } from "./sidecar-yaml";
 
-export const SCHEMA_HINT_LINES = [
-  '// Schema: { "<id>": { anchor:{exact,prefix,suffix,pos?}, status:open|resolved, thread:[{author,ts,text}], suggestion?:{replacement,author,ts,result?} } }',
-  '// Anchor = quote from the prose. To locate: search for "exact", disambiguate via prefix/suffix.',
-];
-
-const FENCE_OPEN = "```tandem-comments";
-const CONTEXT_LEN = 20;
-
-export function parseBlockBody(body: string): CommentMap {
-  const lines = body.split("\n");
-  let i = 0;
-  while (i < lines.length && (lines[i].startsWith("//") || lines[i].trim() === "")) i++;
-  const data: unknown = JSON.parse(lines.slice(i).join("\n"));
-  if (typeof data !== "object" || data === null || Array.isArray(data)) {
-    throw new Error("tandem-comments: top level must be an object");
-  }
-  return data as CommentMap;
+/** File access the store needs; the plugin backs it with the Obsidian vault. */
+export interface SidecarIO {
+  /** The file's text, or null when it doesn't exist. */
+  read(path: string): Promise<string | null>;
+  /** Creates or overwrites the file. */
+  write(path: string, content: string): Promise<void>;
+  remove(path: string): Promise<void>;
+  rename(from: string, to: string): Promise<void>;
+  /** Whether a file (such as a note) exists at `path`. */
+  exists(path: string): Promise<boolean>;
 }
 
-interface BlockMatch {
-  proseEnd: number;
-  body: string;
-  trailing: string;
-}
-
-function findBlock(raw: string): BlockMatch | null {
-  // Letzter Block der Datei; danach darf weiterer Inhalt folgen (z.B. Fußnoten-
-  // Definitionen, die Obsidian ans Dateiende hängt — Issue #2).
-  const idx = raw.lastIndexOf("\n" + FENCE_OPEN + "\n");
-  let proseEnd: number;
-  let bodyStart: number;
-  if (idx >= 0) {
-    proseEnd = idx;
-    bodyStart = idx + FENCE_OPEN.length + 2;
-  } else if (raw.startsWith(FENCE_OPEN + "\n")) {
-    proseEnd = 0;
-    bodyStart = FENCE_OPEN.length + 1;
-  } else {
-    return null;
-  }
-  const rest = raw.slice(bodyStart);
-  // Die eigene schließende Fence ist die erste vollständige ```-Zeile; der Body
-  // kann keine enthalten (JSON escapet Newlines, Hint-Zeilen beginnen mit //).
-  let closeIdx = rest.indexOf("\n```");
-  while (closeIdx >= 0 && closeIdx + 4 < rest.length && rest[closeIdx + 4] !== "\n") {
-    closeIdx = rest.indexOf("\n```", closeIdx + 1);
-  }
-  if (closeIdx < 0) return null;
-  const trailing = closeIdx + 5 <= rest.length ? rest.slice(closeIdx + 5) : "";
-  return { proseEnd, body: rest.slice(0, closeIdx), trailing };
-}
-
-export function parseDocument(raw: string): ParsedDoc {
-  const blk = findBlock(raw);
-  if (!blk) return { prose: raw, comments: {} };
-  try {
-    const comments = parseBlockBody(blk.body);
-    const doc: ParsedDoc = { prose: raw.slice(0, blk.proseEnd), comments };
-    if (blk.trailing) doc.trailing = blk.trailing;
-    return doc;
-  } catch (e) {
-    return { prose: raw, comments: {}, error: e instanceof Error ? e.message : String(e) };
-  }
-}
-
-export function serializeDocument(
-  doc: { prose: string; comments: CommentMap; trailing?: string; error?: string },
-  schemaHint: boolean
-): string {
-  if (doc.error) throw new Error("refusing to serialize a document with a parse error: " + doc.error);
-  const trailing = doc.trailing ?? "";
-  if (Object.keys(doc.comments).length === 0) {
-    const separator =
-      doc.prose && trailing && !doc.prose.endsWith("\n") && !trailing.startsWith("\n") ? "\n" : "";
-    return doc.prose + separator + trailing;
-  }
-  const hint = schemaHint ? SCHEMA_HINT_LINES.join("\n") + "\n" : "";
-  return (
-    doc.prose + "\n" + FENCE_OPEN + "\n" + hint + JSON.stringify(doc.comments, null, 2) + "\n```\n" + trailing
-  );
-}
+/** What happened to a sidecar when its note was renamed. */
+export type RenameOutcome = "moved" | "updated" | "none" | "conflict";
 
 /**
- * Plant die Minimal-Änderungen, die Inhalt hinter dem Block (getippte Prosa,
- * von Obsidian angehängte Fußnoten-Definitionen) vor den Block zurückfalten,
- * sodass der Block wieder das letzte Element der Datei ist. Zwei Teil-
- * Änderungen (Block löschen, am Ende wieder anfügen) statt Ganz-Ersetzung,
- * damit CodeMirror den Cursor eines gerade tippenden Users korrekt mappt.
- * Anker sind zitat-basiert und überleben die Verschiebung. null = kanonisch.
- * Invariante: doc muss parseDocument(raw) desselben raw sein, sonst sind die
- * berechneten Offsets Müll.
+ * Who caused a change: the plugin's own UI, the editor's live anchor
+ * tracking, or something outside the plugin (a sync, an agent, a hand edit).
  */
-export function normalizeTrailingChanges(
-  raw: string,
-  doc: ParsedDoc
-): { from: number; to: number; insert: string }[] | null {
-  if (doc.error || !doc.trailing || doc.trailing.trim() === "") return null;
-  const blockStart = doc.prose.length;
-  const blockEnd = raw.length - doc.trailing.length;
-  const block = raw.slice(blockStart, blockEnd);
-  const blockText = block.startsWith("\n") ? block.slice(1) : block;
-  const sep = raw.endsWith("\n") ? "" : "\n";
-  return [
-    { from: blockStart, to: blockEnd, insert: blockStart === 0 ? "" : "\n" },
-    { from: raw.length, to: raw.length, insert: sep + blockText },
-  ];
+export type ChangeOrigin = "local" | "tracking" | "external";
+
+export interface StoreChange {
+  notePath: string;
+  origin: ChangeOrigin;
 }
 
-/**
- * Strikter Kontext-Vergleich. Von makeAnchor erzeugte Prefixe/Suffixe sind auf
- * den tatsächlich vorhandenen Text geklemmt und matchen daher immer exakt;
- * truncated/vakuose Matches (z.B. leerer Prefix am Dokumentanfang) sind
- * absichtlich KEINE Treffer — sonst kippt die Disambiguierung.
- */
-function contextMatches(prose: string, at: number, len: number, anchor: Anchor): boolean {
-  if (anchor.prefix && prose.slice(Math.max(0, at - anchor.prefix.length), at) !== anchor.prefix) return false;
-  if (anchor.suffix && prose.slice(at + len, at + len + anchor.suffix.length) !== anchor.suffix) return false;
-  return true;
+export interface SidecarState {
+  doc: MrsfDocument;
+  /** Set when the sidecar exists but couldn't be fully parsed; such files are never written. */
+  error?: string;
 }
 
-export function resolveAnchor(prose: string, anchor: Anchor): AnchorResolution {
-  const exact = anchor.exact;
-  if (!exact) return { kind: "orphaned" };
-  const matches: number[] = [];
-  let i = prose.indexOf(exact);
-  while (i !== -1) {
-    matches.push(i);
-    i = prose.indexOf(exact, i + 1);
+export type UpdateResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+function parse(notePath: string, raw: string | null): SidecarState {
+  // An empty file holds no comments, so treat it like a missing one rather than as damaged.
+  if (raw === null || raw.trim() === "") return { doc: emptyDocument(notePath) };
+  const parsed = parseSidecarContentLenient(raw, sidecarPathFor(notePath));
+  if (parsed.error || !parsed.doc) {
+    return { doc: parsed.doc ?? emptyDocument(notePath), error: parsed.error ?? "Unreadable sidecar" };
   }
-  if (matches.length === 0) return { kind: "orphaned" };
-  let cands = matches;
-  if (cands.length > 1) {
-    const filtered = cands.filter((m) => contextMatches(prose, m, exact.length, anchor));
-    if (filtered.length > 0) cands = filtered;
+  const seen = new Set<string>();
+  for (const comment of parsed.doc.comments) {
+    // Comments are addressed by id, so a duplicate would make any write ambiguous.
+    if (seen.has(comment.id)) return { doc: parsed.doc, error: `More than one comment has the id "${comment.id}"` };
+    seen.add(comment.id);
   }
-  if (cands.length === 1) return { kind: "resolved", start: cands[0], end: cands[0] + exact.length };
-  let best = cands[0];
-  if (anchor.pos != null) {
-    const pos = anchor.pos;
-    best = cands.reduce((a, b) => (Math.abs(b - pos) < Math.abs(a - pos) ? b : a));
+  return { doc: parsed.doc };
+}
+
+/** Queue key shared by every rename and delete, so overlapping moves run in order. */
+const LIFECYCLE_QUEUE = "\u0000lifecycle";
+
+/** Caches, reads, and writes the MRSF sidecar of each note. */
+export class SidecarStore {
+  private readonly cache = new Map<string, SidecarState>();
+  private readonly queues = new Map<string, Promise<unknown>>();
+  /** What the plugin last wrote to each sidecar path (null = deleted), to recognize its own modify events. */
+  private readonly written = new Map<string, string | null>();
+  private readonly listeners = new Set<(change: StoreChange) => void>();
+
+  constructor(private readonly io: SidecarIO) {}
+
+  onChange(listener: (change: StoreChange) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
-  return { kind: "resolved", start: best, end: best + exact.length, ambiguous: true };
-}
 
-export function makeAnchor(prose: string, start: number, end: number): Anchor {
-  const anchor: Anchor = { exact: prose.slice(start, end), pos: start };
-  const prefix = prose.slice(Math.max(0, start - CONTEXT_LEN), start);
-  const suffix = prose.slice(end, Math.min(prose.length, end + CONTEXT_LEN));
-  if (prefix) anchor.prefix = prefix;
-  if (suffix) anchor.suffix = suffix;
-  return anchor;
-}
-
-export function addComment(
-  comments: CommentMap,
-  id: string,
-  anchor: Anchor,
-  author: string,
-  ts: string,
-  text: string
-): void {
-  comments[id] = { anchor, status: "open", thread: [{ author, ts, text }] };
-}
-
-export function addSuggestion(
-  comments: CommentMap,
-  id: string,
-  anchor: Anchor,
-  author: string,
-  ts: string,
-  replacement: string,
-  note?: string
-): void {
-  comments[id] = {
-    anchor,
-    status: "open",
-    thread: note ? [{ author, ts, text: note }] : [],
-    suggestion: { replacement, author, ts },
-  };
-}
-
-export function addReply(comments: CommentMap, id: string, author: string, ts: string, text: string): void {
-  const c = comments[id];
-  if (!c) throw new Error(`tandem-comments: unknown comment id "${id}"`);
-  c.thread.push({ author, ts, text });
-}
-
-export function editThreadEntry(
-  comments: CommentMap,
-  id: string,
-  index: number,
-  expected: ThreadEntry,
-  text: string
-): { ok: true } | { ok: false; reason: "missing" | "conflict" } {
-  const entry = comments[id]?.thread[index];
-  if (!entry) return { ok: false, reason: "missing" };
-  if (entry.author !== expected.author || entry.ts !== expected.ts || entry.text !== expected.text) {
-    return { ok: false, reason: "conflict" };
+  private emit(change: StoreChange): void {
+    for (const listener of [...this.listeners]) listener(change);
   }
-  entry.text = text;
-  return { ok: true };
-}
 
-export function setStatus(comments: CommentMap, id: string, status: CommentStatus): void {
-  const c = comments[id];
-  if (!c) throw new Error(`tandem-comments: unknown comment id "${id}"`);
-  c.status = status;
-}
-
-export function removeThreadEntry(comments: CommentMap, id: string, index: number): void {
-  const comment = comments[id];
-  if (!comment) throw new Error(`tandem-comments: unknown comment id "${id}"`);
-  if (!comment.thread[index]) {
-    throw new Error(`tandem-comments: thread entry ${index} out of range for comment "${id}"`);
+  /** The cached state, if the note's sidecar has been loaded. */
+  peek(notePath: string): SidecarState | undefined {
+    return this.cache.get(notePath);
   }
-  // A plain comment's first entry is its root, so deleting it removes the whole
-  // thread. A suggestion's first entry is only its optional explanation.
-  if (index === 0 && !comment.suggestion) {
-    delete comments[id];
-    return;
+
+  async load(notePath: string): Promise<SidecarState> {
+    const cached = this.cache.get(notePath);
+    if (cached) return cached;
+    return this.enqueue(notePath, async () => {
+      const again = this.cache.get(notePath);
+      if (again) return again;
+      const state = parse(notePath, await this.io.read(sidecarPathFor(notePath)));
+      this.cache.set(notePath, state);
+      return state;
+    });
   }
-  comment.thread.splice(index, 1);
-}
 
-export function removeComment(comments: CommentMap, id: string): void {
-  delete comments[id];
-}
+  /** Runs `task` after every earlier task for the same note, so read-modify-write cycles never interleave. */
+  private enqueue<T>(notePath: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.queues.get(notePath) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(task);
+    const settled = run.catch(() => undefined);
+    this.queues.set(notePath, settled);
+    void settled.then(() => {
+      if (this.queues.get(notePath) === settled) this.queues.delete(notePath);
+    });
+    return run;
+  }
 
-export type SuggestionFailureReason =
-  | "missing"
-  | "no-editor"
-  | "invalid-document"
-  | "invalid-suggestion"
-  | "not-suggestion"
-  | "already-resolved"
-  | "empty-replacement"
-  | "orphaned"
-  | "ambiguous";
+  /**
+   * Applies `mutate` to the note's comments and saves the result. The sidecar
+   * is re-read first so changes made outside the plugin aren't overwritten.
+   * The file is created on the first comment and deleted with the last.
+   */
+  update<T>(notePath: string, mutate: (doc: MrsfDocument) => T, origin: ChangeOrigin = "local"): Promise<UpdateResult<T>> {
+    return this.enqueue(notePath, async () => {
+      const path = sidecarPathFor(notePath);
+      const raw = await this.io.read(path);
+      const state = parse(notePath, raw);
+      if (state.error) {
+        this.cache.set(notePath, state);
+        return { ok: false, error: state.error } as const;
+      }
+      const doc = state.doc;
+      const value = mutate(doc);
+      doc.document = notePath;
+      if (doc.comments.length === 0) {
+        if (raw !== null) {
+          this.written.set(path, null);
+          await this.io.remove(path);
+        }
+      } else {
+        const next = serializeSidecar(raw, doc);
+        if (next !== raw) {
+          this.written.set(path, next);
+          await this.io.write(path, next);
+        }
+      }
+      this.cache.set(notePath, { doc });
+      this.emit({ notePath, origin });
+      return { ok: true, value } as const;
+    });
+  }
 
-export type AcceptSuggestionResult =
-  | { ok: true; start: number; end: number; replacement: string }
-  | { ok: false; reason: SuggestionFailureReason };
+  /**
+   * Called when a sidecar file changed on disk. Ignores the plugin's own
+   * writes; anything else is re-read and announced as an external change.
+   */
+  async sidecarChanged(notePath: string): Promise<void> {
+    const path = sidecarPathFor(notePath);
+    await this.enqueue(notePath, async () => {
+      const raw = await this.io.read(path);
+      if (this.written.has(path) && this.written.get(path) === raw) return;
+      this.written.delete(path);
+      if (!this.cache.has(notePath) && raw === null) return;
+      this.cache.set(notePath, parse(notePath, raw));
+      this.emit({ notePath, origin: "external" });
+    });
+  }
 
-export type DeclineSuggestionResult = { ok: true } | { ok: false; reason: SuggestionFailureReason };
-
-export interface SuggestionTextChange {
-  from: number;
-  to: number;
-  insert: string;
-}
-
-export type SuggestionAcceptancePlan =
-  | {
-      ok: true;
-      changes: [SuggestionTextChange, SuggestionTextChange];
-      cursor: number;
+  /**
+   * Moves a note's sidecar along with the note and updates its `document`
+   * field. `folderMoved` says the sidecar already moved with a renamed folder.
+   * Renames and deletes share one queue so chains and swaps apply in order.
+   */
+  async noteRenamed(oldNotePath: string, newNotePath: string, folderMoved = false): Promise<RenameOutcome> {
+    const from = sidecarPathFor(oldNotePath);
+    const to = sidecarPathFor(newNotePath);
+    const outcome = await this.enqueue(LIFECYCLE_QUEUE, () =>
+      this.enqueue(oldNotePath, async (): Promise<RenameOutcome> => {
+        this.cache.delete(oldNotePath);
+        const source = (await this.io.read(from)) !== null;
+        const target = (await this.io.read(to)) !== null;
+        if (source && target) return "conflict";
+        if (source) {
+          await this.io.rename(from, to);
+          return "moved";
+        }
+        return target && folderMoved ? "updated" : "none";
+      })
+    );
+    if (outcome === "moved" || outcome === "updated") {
+      this.cache.delete(newNotePath);
+      await this.update(newNotePath, () => undefined, "external");
     }
-  | { ok: false; reason: SuggestionFailureReason; error?: string };
-
-function isSuggestionObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function finishSuggestion(
-  comments: CommentMap,
-  id: string,
-  result: SuggestionResult,
-  behavior: "keep" | "remove"
-): void {
-  if (behavior === "remove") {
-    delete comments[id];
-    return;
-  }
-  const comment = comments[id];
-  const suggestion: unknown = comment?.suggestion;
-  if (!comment || !isSuggestionObject(suggestion)) return;
-  comment.status = "resolved";
-  suggestion.result = result;
-}
-
-/**
- * Applies an open replacement suggestion to a parsed document. The caller is
- * responsible for committing the returned prose + comment-block changes as one
- * editor transaction.
- */
-export function acceptSuggestion(
-  doc: ParsedDoc,
-  id: string,
-  behavior: "keep" | "remove"
-): AcceptSuggestionResult {
-  const comment = doc.comments[id];
-  if (!comment) return { ok: false, reason: "missing" };
-  const suggestion: unknown = comment.suggestion;
-  if (suggestion === undefined) return { ok: false, reason: "not-suggestion" };
-  if (!isSuggestionObject(suggestion)) return { ok: false, reason: "invalid-suggestion" };
-  if (comment.status !== "open" || suggestion.result) {
-    return { ok: false, reason: "already-resolved" };
-  }
-  const replacement = suggestion.replacement;
-  if (typeof replacement !== "string") return { ok: false, reason: "invalid-suggestion" };
-  if (replacement.length === 0) return { ok: false, reason: "empty-replacement" };
-
-  const resolution = resolveAnchor(doc.prose, comment.anchor);
-  if (resolution.kind === "orphaned") return { ok: false, reason: "orphaned" };
-  if (resolution.ambiguous) return { ok: false, reason: "ambiguous" };
-  if (doc.prose.slice(resolution.start, resolution.end) !== comment.anchor.exact) {
-    return { ok: false, reason: "orphaned" };
+    return outcome;
   }
 
-  const oldProse = doc.prose;
-  const survivingAnchors = Object.entries(doc.comments).flatMap(([otherId, other]) => {
-    if (otherId === id || other.status !== "open") return [];
-    const otherResolution = resolveAnchor(oldProse, other.anchor);
-    return otherResolution.kind === "resolved" && !otherResolution.ambiguous
-      ? [{ id: otherId, from: otherResolution.start, to: otherResolution.end }]
-      : [];
-  });
-  const replacementChange = ChangeSet.of(
-    { from: resolution.start, to: resolution.end, insert: replacement },
-    oldProse.length
-  );
-  doc.prose = oldProse.slice(0, resolution.start) + replacement + oldProse.slice(resolution.end);
-  for (const mapped of mapAnchors(survivingAnchors, replacementChange)) {
-    const surviving = doc.comments[mapped.id];
-    if (surviving && mapped.to <= doc.prose.length) {
-      surviving.anchor = makeAnchor(doc.prose, mapped.from, mapped.to);
-    }
+  /** Deletes a note's sidecar along with the note, unless the note has come back in the meantime. */
+  async noteDeleted(notePath: string): Promise<void> {
+    const path = sidecarPathFor(notePath);
+    await this.enqueue(LIFECYCLE_QUEUE, () =>
+      this.enqueue(notePath, async () => {
+        this.cache.delete(notePath);
+        if (await this.io.exists(notePath)) return;
+        if ((await this.io.read(path)) === null) return;
+        this.written.set(path, null);
+        await this.io.remove(path);
+      })
+    );
   }
-  finishSuggestion(doc.comments, id, "accepted", behavior);
-  return { ok: true, start: resolution.start, end: resolution.end, replacement };
-}
 
-export function declineSuggestion(
-  comments: CommentMap,
-  id: string,
-  behavior: "keep" | "remove"
-): DeclineSuggestionResult {
-  const comment = comments[id];
-  if (!comment) return { ok: false, reason: "missing" };
-  const suggestion: unknown = comment.suggestion;
-  if (suggestion === undefined) return { ok: false, reason: "not-suggestion" };
-  if (!isSuggestionObject(suggestion)) return { ok: false, reason: "invalid-suggestion" };
-  if (comment.status !== "open" || suggestion.result) {
-    return { ok: false, reason: "already-resolved" };
+  forget(notePath: string): void {
+    this.cache.delete(notePath);
   }
-  finishSuggestion(comments, id, "declined", behavior);
-  return { ok: true };
-}
-
-/**
- * Plans the two simultaneous changes used by the editor: one replacement in
- * the prose and one rewrite of the comment region. All coordinates refer to
- * the original string, making the operation a single undoable transaction.
- */
-export function planSuggestionAcceptance(
-  raw: string,
-  id: string,
-  behavior: "keep" | "remove",
-  schemaHint: boolean
-): SuggestionAcceptancePlan {
-  const doc = parseDocument(raw);
-  if (doc.error) return { ok: false, reason: "invalid-document", error: doc.error };
-  const oldProseLength = doc.prose.length;
-  const result = acceptSuggestion(doc, id, behavior);
-  if (!result.ok) return result;
-  const serialized = serializeDocument(doc, schemaHint);
-  return {
-    ok: true,
-    changes: [
-      { from: result.start, to: result.end, insert: result.replacement },
-      { from: oldProseLength, to: raw.length, insert: serialized.slice(doc.prose.length) },
-    ],
-    cursor: result.start + result.replacement.length,
-  };
-}
-
-export function generateId(existing: CommentMap): string {
-  for (;;) {
-    const id = Math.floor(Math.random() * 0xffff)
-      .toString(16)
-      .padStart(4, "0");
-    if (!(id in existing)) return id;
-  }
-}
-
-export function resolveAll(prose: string, comments: CommentMap): ResolvedComment[] {
-  return Object.entries(comments).map(([id, comment]) => {
-    const acceptedHistory =
-      comment.status === "resolved" &&
-      isSuggestionObject(comment.suggestion) &&
-      comment.suggestion.result === "accepted";
-    return {
-      id,
-      comment,
-      // The retained anchor describes the text that was replaced, not a safe
-      // navigation target in the resulting prose.
-      resolution: acceptedHistory ? { kind: "orphaned" } : resolveAnchor(prose, comment.anchor),
-    };
-  });
 }

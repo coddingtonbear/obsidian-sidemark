@@ -1,153 +1,154 @@
 import { describe, expect, it } from "vitest";
+import { buildThreads, emptyDocument, suggestionOf, type MrsfDocument } from "../src/model";
 import {
   addComment,
   addReply,
   addSuggestion,
-  editThreadEntry,
-  generateId,
-  removeComment,
-  removeThreadEntry,
-  resolveAll,
-  setStatus,
-} from "../src/store";
-import type { CommentMap } from "../src/types";
+  deleteComment,
+  deleteThread,
+  editText,
+  finishSuggestion,
+  removeResolvedThreads,
+  reopenSuggestion,
+  retarget,
+  setThreadResolved,
+} from "../src/mutations";
 
-function sample(): CommentMap {
-  return {
-    a1f3: {
-      anchor: { exact: "abc" },
-      status: "open",
-      thread: [{ author: "Leon", ts: "2026-06-10T00:00:00Z", text: "Hi" }],
-    },
-  };
+const ts = "2026-09-16T10:00:00Z";
+const anchor = { selected_text: "quick", line: 1, end_line: 1, start_column: 4, end_column: 9 };
+
+function entry(id: string, text = "text", timestamp = ts) {
+  return { id, author: "Adam", timestamp, text };
 }
 
-function threaded(): CommentMap {
-  return {
-    a1f3: {
-      anchor: { exact: "abc" },
-      status: "open",
-      thread: [
-        { author: "Leon", ts: "2026-06-10T00:00:00Z", text: "Hi" },
-        { author: "Claude", ts: "2026-06-10T01:00:00Z", text: "Antwort" },
-      ],
-    },
-  };
+function sample(): MrsfDocument {
+  const doc = emptyDocument("Note.md");
+  addComment(doc, entry("root"), anchor);
+  addReply(doc, "root", entry("r1", "first", "2026-09-16T10:01:00Z"));
+  addReply(doc, "root", entry("r2", "second", "2026-09-16T10:02:00Z"));
+  return doc;
 }
+
+describe("threads", () => {
+  it("groups replies under their root, oldest first", () => {
+    const threads = buildThreads(sample());
+    expect(threads).toHaveLength(1);
+    expect(threads[0].root.id).toBe("root");
+    expect(threads[0].replies.map((r) => r.id)).toEqual(["r1", "r2"]);
+  });
+
+  it("flattens nested replies and promotes replies whose parent is missing", () => {
+    const doc = sample();
+    doc.comments.push({ ...entry("nested"), resolved: false, reply_to: "r1" });
+    doc.comments.push({ ...entry("stray"), resolved: false, reply_to: "gone" });
+    const threads = buildThreads(doc);
+    expect(threads.map((t) => t.root.id)).toEqual(["root", "stray"]);
+    expect(threads[0].replies.map((r) => r.id)).toContain("nested");
+  });
+
+  it("survives reply_to cycles", () => {
+    const doc = emptyDocument("Note.md");
+    doc.comments.push({ ...entry("a"), resolved: false, reply_to: "b" });
+    doc.comments.push({ ...entry("b"), resolved: false, reply_to: "a" });
+    expect(buildThreads(doc).flatMap((t) => [t.root, ...t.replies])).toHaveLength(2);
+  });
+});
 
 describe("mutations", () => {
-  it("addComment creates an open comment with one thread entry", () => {
-    const c: CommentMap = {};
-    addComment(c, "x1", { exact: "foo" }, "Leon", "2026-06-10T00:00:00Z", "Text");
-    expect(c.x1).toEqual({
-      anchor: { exact: "foo" },
-      status: "open",
-      thread: [{ author: "Leon", ts: "2026-06-10T00:00:00Z", text: "Text" }],
-    });
+  it("resolves and reopens a whole thread", () => {
+    const doc = sample();
+    setThreadResolved(doc, "root", true);
+    expect(doc.comments.every((c) => c.resolved)).toBe(true);
+    setThreadResolved(doc, "root", false);
+    expect(doc.comments.every((c) => !c.resolved)).toBe(true);
   });
 
-  it("addReply appends to the thread", () => {
-    const c = sample();
-    addReply(c, "a1f3", "Claude", "2026-06-10T01:00:00Z", "Antwort");
-    expect(c.a1f3.thread).toHaveLength(2);
-    expect(c.a1f3.thread[1].author).toBe("Claude");
+  it("edits text only when it hasn't changed underneath", () => {
+    const doc = sample();
+    expect(editText(doc, "r1", "stale", "new")).toEqual({ ok: false, reason: "conflict" });
+    expect(editText(doc, "nope", "first", "new")).toEqual({ ok: false, reason: "missing" });
+    expect(editText(doc, "r1", "first", "new")).toEqual({ ok: true });
+    expect(doc.comments[1].text).toBe("new");
   });
 
-  it("addReply throws for unknown id", () => {
-    expect(() => addReply(sample(), "nope", "X", "ts", "t")).toThrow();
+  it("deletes a thread with all its replies", () => {
+    const doc = sample();
+    doc.comments.push({ ...entry("nested"), resolved: false, reply_to: "r1" });
+    deleteThread(doc, "root");
+    expect(doc.comments).toEqual([]);
   });
 
-  it("edits one thread entry without changing its metadata", () => {
-    const c = sample();
-    const original = { ...c.a1f3.thread[0] };
-
-    expect(editThreadEntry(c, "a1f3", 0, original, "Corrected text")).toEqual({ ok: true });
-    expect(c.a1f3.thread[0]).toEqual({
-      author: "Leon",
-      ts: "2026-06-10T00:00:00Z",
-      text: "Corrected text",
-    });
+  it("deletes a single comment by promoting its replies (MRSF §9.1)", () => {
+    const doc = sample();
+    doc.comments.push({ ...entry("nested"), resolved: false, reply_to: "r1" });
+    deleteComment(doc, "r1");
+    expect(doc.comments.find((c) => c.id === "nested")?.reply_to).toBe("root");
+    deleteComment(doc, "root");
+    const r2 = doc.comments.find((c) => c.id === "r2");
+    expect(r2?.reply_to).toBeUndefined();
+    expect(r2).toMatchObject(anchor);
   });
 
-  it("does not overwrite a thread entry that changed after editing began", () => {
-    const c = sample();
-    const original = { ...c.a1f3.thread[0] };
-    c.a1f3.thread[0].text = "Changed elsewhere";
-
-    expect(editThreadEntry(c, "a1f3", 0, original, "My edit")).toEqual({
-      ok: false,
-      reason: "conflict",
-    });
-    expect(c.a1f3.thread[0].text).toBe("Changed elsewhere");
+  it("removes resolved threads only", () => {
+    const doc = sample();
+    addComment(doc, entry("other"), anchor);
+    setThreadResolved(doc, "root", true);
+    expect(removeResolvedThreads(doc)).toBe(1);
+    expect(doc.comments.map((c) => c.id)).toEqual(["other"]);
   });
 
-  it("setStatus flips status", () => {
-    const c = sample();
-    setStatus(c, "a1f3", "resolved");
-    expect(c.a1f3.status).toBe("resolved");
+  it("retargets a comment, clearing stale drift markers", () => {
+    const doc = sample();
+    Object.assign(doc.comments[0], { anchored_text: "quack", x_reanchor_status: "fuzzy", x_prefix: "old" });
+    retarget(doc, "root", { selected_text: "brown", line: 2, end_line: 2, start_column: 0, end_column: 5 });
+    expect(doc.comments[0]).toMatchObject({ selected_text: "brown", line: 2 });
+    expect(doc.comments[0].anchored_text).toBeUndefined();
+    expect(doc.comments[0].x_reanchor_status).toBeUndefined();
+    expect(doc.comments[0].x_prefix).toBeUndefined();
+  });
+});
+
+describe("suggestions", () => {
+  function withSuggestion(): MrsfDocument {
+    const doc = emptyDocument("Note.md");
+    addSuggestion(doc, entry("s", ""), anchor, "slow");
+    addReply(doc, "s", entry("s-r"));
+    return doc;
+  }
+
+  it("stores the replacement in x_suggestion with type suggestion", () => {
+    const doc = withSuggestion();
+    expect(doc.comments[0]).toMatchObject({ type: "suggestion", x_suggestion: { replacement: "slow" } });
+    expect(suggestionOf(doc.comments[0])).toEqual({ replacement: "slow" });
   });
 
-  it("removeComment deletes the entry", () => {
-    const c = sample();
-    removeComment(c, "a1f3");
-    expect(c).toEqual({});
+  it("keeps accepted suggestions as resolved history", () => {
+    const doc = withSuggestion();
+    expect(finishSuggestion(doc, "s", "accepted", "keep")).toMatchObject({ ok: true });
+    expect(doc.comments[0]).toMatchObject({ resolved: true, x_suggestion: { replacement: "slow", result: "accepted" } });
+    expect(doc.comments[1].resolved).toBe(true);
+    expect(finishSuggestion(doc, "s", "declined", "keep")).toEqual({ ok: false, reason: "already-resolved" });
   });
 
-  it("removeThreadEntry on a reply splices just that entry", () => {
-    const c = threaded();
-    removeThreadEntry(c, "a1f3", 1);
-    expect(c.a1f3.thread).toHaveLength(1);
-    expect(c.a1f3.thread[0].author).toBe("Leon");
+  it("removes finished suggestions when configured to", () => {
+    const doc = withSuggestion();
+    finishSuggestion(doc, "s", "declined", "remove");
+    expect(doc.comments).toEqual([]);
   });
 
-  it("removeThreadEntry on the root entry deletes the whole comment", () => {
-    const c = threaded();
-    removeThreadEntry(c, "a1f3", 0);
-    expect(c).toEqual({});
+  it("reopens a finished suggestion", () => {
+    const doc = withSuggestion();
+    finishSuggestion(doc, "s", "accepted", "keep");
+    reopenSuggestion(doc, "s");
+    expect(doc.comments[0]).toMatchObject({ resolved: false, x_suggestion: { replacement: "slow" } });
+    expect(suggestionOf(doc.comments[0])?.result).toBeUndefined();
   });
 
-  it("removeThreadEntry throws for unknown id", () => {
-    expect(() => removeThreadEntry(sample(), "nope", 0)).toThrow();
-  });
-
-  it("removeThreadEntry throws for out-of-range index", () => {
-    expect(() => removeThreadEntry(sample(), "a1f3", 5)).toThrow();
-  });
-
-  it("removeThreadEntry on a suggestion's explanation keeps the suggestion", () => {
-    const c: CommentMap = {};
-    addSuggestion(
-      c,
-      "s1",
-      { exact: "abc" },
-      "Claude",
-      "2026-06-10T00:00:00Z",
-      "replacement",
-      "why this change"
-    );
-    addReply(c, "s1", "Leon", "2026-06-10T01:00:00Z", "Follow-up");
-    removeThreadEntry(c, "s1", 0);
-    expect(c.s1).toBeDefined();
-    expect(c.s1.suggestion?.replacement).toBe("replacement");
-    expect(c.s1.thread).toEqual([
-      { author: "Leon", ts: "2026-06-10T01:00:00Z", text: "Follow-up" },
-    ]);
-  });
-
-  it("generateId returns 4-char hex ids not colliding with existing", () => {
-    const c = sample();
-    for (let i = 0; i < 100; i++) {
-      const id = generateId(c);
-      expect(id).toMatch(/^[0-9a-f]{4}$/);
-      expect(id in c).toBe(false);
-    }
-  });
-
-  it("resolveAll resolves every comment against the prose", () => {
-    const c = sample();
-    const rs = resolveAll("xx abc yy", c);
-    expect(rs).toHaveLength(1);
-    expect(rs[0].id).toBe("a1f3");
-    expect(rs[0].resolution).toEqual({ kind: "resolved", start: 3, end: 6 });
+  it("rejects malformed suggestion data", () => {
+    const doc = emptyDocument("Note.md");
+    addComment(doc, entry("bad"), anchor);
+    doc.comments[0].x_suggestion = { replacement: 5 };
+    expect(finishSuggestion(doc, "bad", "accepted", "keep")).toEqual({ ok: false, reason: "invalid-suggestion" });
+    expect(finishSuggestion(doc, "plain", "accepted", "keep")).toEqual({ ok: false, reason: "missing" });
   });
 });

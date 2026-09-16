@@ -4,3 +4,5 @@ main.js
 .DS_Store
 docs/superpowers/
 docs/RELEASING.md
+# Plugin settings written by Obsidian when the repo is used as an installed plugin
+data.json

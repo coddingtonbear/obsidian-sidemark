@@ -1,21 +1,27 @@
 {
-  "name": "tandem-comments",
-  "version": "0.5.2",
-  "description": "Google Docs-style comments and edit suggestions for Obsidian — quote-anchored and AI-assistant friendly",
+  "name": "obsidian-sidemark",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Comments and edit suggestions for Obsidian notes, stored in MRSF (Sidemark) sidecar files",
   "main": "main.js",
   "type": "module",
+  "license": "MIT",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "build": "tsc -noEmit && node esbuild.config.mjs production",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@mrsf/cli": "0.7.1",
+    "yaml": "2.9.1"
+  },
   "devDependencies": {
-    "@codemirror/state": "6.5.0",
-    "@codemirror/view": "6.38.6",
-    "esbuild": "^0.28.0",
-    "obsidian": "latest",
-    "tslib": "^2.6.2",
-    "typescript": "^5.4.5",
-    "vitest": "^4.1.8"
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/view": "^6.38.6",
+    "esbuild": "^0.28.2",
+    "obsidian": "^1.13.1",
+    "tslib": "^2.8.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
   }
 }

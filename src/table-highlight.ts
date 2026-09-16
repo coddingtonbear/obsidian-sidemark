@@ -1,19 +1,19 @@
 import type { EditorView } from "@codemirror/view";
-import type { TrackedAnchor } from "./reanchor";
+import type { TrackedAnchor } from "./tracking";
 
 /**
- * Live-Preview rendert Tabellen als Widget (ersetzt den Quelltext durch ein
- * <table>). CM-`mark`-Dekorationen innerhalb eines ersetzten Bereichs werden
- * nicht gezeichnet — der Highlight verschwindet also in Tabellen. Dieser Modul
- * findet die Zelle, in der ein Anker liegt, und setzt den Highlight direkt im
- * gerenderten Tabellen-DOM (siehe Issue #3).
+ * Live Preview renders tables as widgets that replace the source with a
+ * <table>, and CodeMirror doesn't draw mark decorations inside replaced
+ * ranges, so highlights would vanish in tables. This module finds the cell an
+ * anchor is in and draws the highlight directly into the rendered table.
+ * (Adapted from Tandem Comments.)
  */
 
-/** Rohe Zelle: Quell-Offsets des Inhalts zwischen zwei Pipes (ohne Trim). */
+/** A raw cell: source offsets of the content between two pipes (untrimmed). */
 export interface Cell {
-  /** 0-basierte Zeilen-Nummer innerhalb des Tabellenblocks (Delimiter-Zeile = 1, hat keine Zellen). */
+  /** 0-based row within the table block (the delimiter row is 1 and has no cells). */
   row: number;
-  /** 0-basierte Spalten-Nummer. */
+  /** 0-based column. */
   col: number;
   from: number;
   to: number;
@@ -25,7 +25,7 @@ export interface ParsedTable {
   cells: Cell[];
 }
 
-/** Delimiter-Zeile einer GFM-Tabelle, z.B. `| --- | :--: |`. */
+/** A GFM table delimiter row, e.g. `| --- | :--: |`. */
 const DELIMITER = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/;
 
 interface Line {
@@ -38,22 +38,22 @@ function splitLines(text: string, limit: number): Line[] {
   let from = 0;
   for (const part of text.slice(0, limit).split("\n")) {
     lines.push({ text: part, from });
-    from += part.length + 1; // +1 für das entfernte "\n"
+    from += part.length + 1; // +1 for the removed "\n"
   }
   return lines;
 }
 
 /**
- * Zerlegt eine Tabellenzeile in Zell-Inhaltsspannen (Offsets relativ zum Dok).
- * Führende/abschließende Whitespace-Segmente von umschließenden Pipes werden
- * verworfen, sodass Spalten 0-basiert ab der ersten echten Zelle zählen.
+ * Splits a table row into cell content spans (document offsets). Empty edge
+ * segments from enclosing pipes are dropped, so columns count from the first
+ * real cell.
  */
 function splitRow(line: Line): { from: number; to: number }[] {
   const segments: { start: number; end: number }[] = [];
   let start = 0;
   for (let i = 0; i < line.text.length; i++) {
     if (line.text[i] === "\\") {
-      i++; // escapte Pipe (\|) überspringen
+      i++; // skip an escaped pipe (\|)
       continue;
     }
     if (line.text[i] === "|") {
@@ -62,7 +62,7 @@ function splitRow(line: Line): { from: number; to: number }[] {
     }
   }
   segments.push({ start, end: line.text.length });
-  // Umschließende Pipes erzeugen leere Randsegmente — verwerfen.
+  // Enclosing pipes produce empty edge segments; drop them.
   if (segments.length > 1 && line.text.slice(segments[0].start, segments[0].end).trim() === "") {
     segments.shift();
   }
@@ -73,7 +73,7 @@ function splitRow(line: Line): { from: number; to: number }[] {
   return segments.map((s) => ({ from: line.from + s.start, to: line.from + s.end }));
 }
 
-/** Findet alle GFM-Tabellenblöcke im Prosa-Bereich [0, limit). */
+/** Finds every GFM table block in [0, limit). */
 export function findTables(text: string, limit: number = text.length): ParsedTable[] {
   const lines = splitLines(text, limit);
   const tables: ParsedTable[] = [];
@@ -81,21 +81,20 @@ export function findTables(text: string, limit: number = text.length): ParsedTab
     const header = lines[i];
     const delim = lines[i + 1];
     if (!delim || !header.text.includes("|") || !DELIMITER.test(delim.text)) continue;
-    // GFM verlangt gleiche Spaltenzahl in Header und Delimiter — schließt z.B.
-    // eine Setext-Überschrift (`some | text` gefolgt von `---`) aus, die sonst
-    // als 1-spaltige Tabelle durchginge.
+    // GFM requires the header and delimiter to have the same column count,
+    // which rules out e.g. a setext heading (`some | text` followed by `---`).
     if (splitRow(header).length !== splitRow(delim).length) continue;
 
-    let end = i; // letzte zum Block gehörende Zeile
+    let end = i; // last line belonging to the block
     for (let j = i + 2; j < lines.length; j++) {
       if (lines[j].text.trim() === "" || !lines[j].text.includes("|")) break;
       end = j;
     }
-    if (end < i + 2) end = i; // nur Header + Delimiter, kein Body → trotzdem gültig
+    if (end < i + 2) end = i; // header + delimiter without a body is still a table
 
     const cells: Cell[] = [];
     for (let r = i; r <= end; r++) {
-      if (r === i + 1) continue; // Delimiter-Zeile hat keine Zellen
+      if (r === i + 1) continue; // the delimiter row has no cells
       const rowIndex = r - i;
       splitRow(lines[r]).forEach((span, col) => cells.push({ row: rowIndex, col, ...span }));
     }
@@ -107,10 +106,9 @@ export function findTables(text: string, limit: number = text.length): ParsedTab
 }
 
 /**
- * Prüft, ob eine der geänderten Spannen einen Tabellenblock berührt. Obsidian
- * formatiert editierte Tabellen neu (Spalten-Ausrichtung, neue Zeilen), was
- * Positions-Mapping unzuverlässig macht — in dem Fall sollten Anker per exaktem
- * Text neu aufgelöst statt umgeschrieben werden (sonst verwaisen Kommentare).
+ * Whether any changed range touches a table. Obsidian reformats edited tables
+ * (column alignment, new rows), which makes position mapping unreliable, so
+ * anchors lost in such an edit are recovered by their text instead.
  */
 export function rangesTouchTable(
   text: string,
@@ -121,7 +119,7 @@ export function rangesTouchTable(
   return tables.some((t) => ranges.some((r) => r.from <= t.to && r.to >= t.from));
 }
 
-/** Zelle, deren Inhaltsspanne die Position enthält (oder null, z.B. Delimiter-Zeile). */
+/** The cell whose content span contains `pos`, or null (e.g. on the delimiter row). */
 export function locateCell(table: ParsedTable, pos: number): Cell | null {
   for (const c of table.cells) {
     if (pos >= c.from && pos < c.to) return c;
@@ -130,24 +128,24 @@ export function locateCell(table: ParsedTable, pos: number): Cell | null {
 }
 
 /**
- * Sichtbarer Text einer Inline-Markdown-Spanne — Syntax wird entfernt, sodass
- * er dem gerenderten textContent der Zelle entspricht (z.B. `**Preis**` → `Preis`).
- * Der Anker-`exact` stammt aus dem Quelltext (mit Syntax); im Tabellen-DOM steht
- * aber nur der gerenderte Text, daher muss danach gesucht werden.
+ * The visible text of an inline Markdown span, with syntax stripped so it
+ * matches the rendered cell's textContent (e.g. `**Price**` → `Price`). The
+ * anchored source text includes syntax, but the table DOM only has rendered
+ * text, so that's what gets searched for.
  */
 export function visibleText(md: string): string {
   return md
-    .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2") // [[Ziel|Alias]] → Alias
-    .replace(/\[\[([^\]]+)\]\]/g, "$1") // [[Ziel]] → Ziel
+    .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2") // [[target|alias]] → alias
+    .replace(/\[\[([^\]]+)\]\]/g, "$1") // [[target]] → target
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1") // [Label](url) / ![alt](url) → Label
-    .replace(/(\*\*|__)(.+?)\1/g, "$2") // **fett** / __fett__
-    .replace(/(\*|_)(.+?)\1/g, "$2") // *kursiv* / _kursiv_
-    .replace(/~~(.+?)~~/g, "$1") // ~~durchgestrichen~~
-    .replace(/==(.+?)==/g, "$1") // ==hervorgehoben==
+    .replace(/(\*\*|__)(.+?)\1/g, "$2") // **bold** / __bold__
+    .replace(/(\*|_)(.+?)\1/g, "$2") // *italic* / _italic_
+    .replace(/~~(.+?)~~/g, "$1") // ~~strikethrough~~
+    .replace(/==(.+?)==/g, "$1") // ==highlight==
     .replace(/`([^`]+)`/g, "$1"); // `code`
 }
 
-/** Findet das DOM-<table>, dessen Quell-Position im Bereich des Tabellenblocks liegt. */
+/** The rendered <table> whose source position falls inside the table block. */
 function findDomTable(view: EditorView, table: ParsedTable): HTMLTableElement | null {
   const tables = view.contentDOM.querySelectorAll("table");
   for (const el of Array.from(tables)) {
@@ -162,7 +160,7 @@ function findDomTable(view: EditorView, table: ParsedTable): HTMLTableElement | 
   return null;
 }
 
-/** Liefert die gerenderte Zelle für eine Quell-(row,col): row 0 = Header, row≥2 = Body-Zeile row-2. */
+/** The rendered cell for a source (row, col): row 0 is the header, row ≥ 2 is body row row-2. */
 function domCell(domTable: HTMLTableElement, cell: Cell): HTMLTableCellElement | null {
   if (cell.row === 0) {
     const headerRow = domTable.tHead?.rows[0] ?? domTable.rows[0];
@@ -172,7 +170,7 @@ function domCell(domTable: HTMLTableElement, cell: Cell): HTMLTableCellElement |
   return (body?.rows[cell.row - 2]?.cells[cell.col] as HTMLTableCellElement) ?? null;
 }
 
-/** Umschließt [start, start+len) im Element mit <span class="tc-highlight">, über Textknoten hinweg. */
+/** Wraps [start, start+len) of the element's text in <span class="sm-highlight">, across text nodes. */
 function wrapRange(
   root: HTMLElement,
   start: number,
@@ -203,14 +201,13 @@ function wrapRange(
     range.setStart(t.node, t.s);
     range.setEnd(t.node, t.e);
     const span = doc.createElement("span");
-    span.className = "tc-highlight";
-    span.dataset.tcId = id;
-    span.dataset.tcTable = "1";
-    // CM-eventHandlers greifen nicht im Widget-DOM der Tabelle — Listener direkt
-    // am Span setzen. Das Event wird abgefangen, damit das Tabellen-Widget NICHT
-    // in den interaktiven Edit-Modus springt: dort würde der Highlight
-    // verschwinden (CM-mark-Dekorationen rendern im Tabellen-Editor nicht).
-    // Zum Editieren woanders in die Zelle klicken.
+    span.className = "sm-highlight";
+    span.dataset.smId = id;
+    span.dataset.smTable = "1";
+    // CodeMirror's event handlers don't reach the table widget's DOM, so the
+    // listener goes on the span. The event is swallowed so the widget doesn't
+    // switch to its editing mode, where the highlight would disappear; click
+    // elsewhere in the cell to edit it.
     const swallow = (e: Event) => {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -230,9 +227,9 @@ function wrapRange(
   return true;
 }
 
-/** Entfernt alle von uns injizierten Tabellen-Highlights (vor jedem Re-Apply). */
+/** Removes every table highlight this module injected (before re-applying). */
 export function clearTableHighlights(view: EditorView): void {
-  view.contentDOM.querySelectorAll<HTMLElement>("span.tc-highlight[data-tc-table]").forEach((span) => {
+  view.contentDOM.querySelectorAll<HTMLElement>("span.sm-highlight[data-sm-table]").forEach((span) => {
     const parent = span.parentNode;
     if (!parent) return;
     while (span.firstChild) parent.insertBefore(span.firstChild, span);
@@ -242,8 +239,8 @@ export function clearTableHighlights(view: EditorView): void {
 }
 
 /**
- * Setzt für jeden Anker, der in einer (als Widget gerenderten) Tabelle liegt,
- * den Highlight direkt im Tabellen-DOM. Idempotent: räumt vorher auf.
+ * Draws the highlight of every anchor inside a rendered table directly into
+ * the table DOM. Idempotent: previous highlights are cleared first.
  */
 export function applyTableHighlights(
   view: EditorView,
@@ -256,7 +253,7 @@ export function applyTableHighlights(
   const tables = findTables(text, proseLen);
   if (tables.length === 0) return;
   for (const a of anchors) {
-    // Pro Anker absichern, damit ein Sonderfall nicht die übrigen Highlights killt.
+    // Guard each anchor so one odd case doesn't break the other highlights.
     try {
       const table = tables.find((t) => a.from >= t.from && a.to <= t.to);
       if (!table) continue;
@@ -266,16 +263,15 @@ export function applyTableHighlights(
       if (!domTable) continue;
       const cellEl = domCell(domTable, cell);
       if (!cellEl) continue;
-      // Quell-Offsets passen nicht zum gerenderten Zelltext: Inline-Markdown
-      // (**fett**, [Label](url) …) wird gerendert weggekürzt, und Syntax *vor*
-      // dem Anker verschiebt den Offset. Daher im gerenderten Text nach dem
-      // sichtbaren Text suchen statt zu rechnen.
+      // Source offsets don't match the rendered cell text: inline Markdown
+      // syntax is removed when rendered, and syntax before the anchor shifts
+      // the offset. So search the rendered text instead of computing.
       const visible = visibleText(text.slice(a.from, a.to));
       if (!visible) continue;
       const k = cellEl.textContent?.indexOf(visible) ?? -1;
       if (k >= 0) wrapRange(cellEl, k, visible.length, a.id, onClick);
     } catch {
-      // ignorieren — dieser Anker wird in diesem Durchlauf einfach nicht markiert.
+      // Ignore; this anchor just isn't highlighted in this pass.
     }
   }
 }

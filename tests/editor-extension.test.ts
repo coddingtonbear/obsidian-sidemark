@@ -1,135 +1,141 @@
-import { EditorState, Transaction, type TransactionSpec } from "@codemirror/state";
+import { parseSidecarContent } from "@mrsf/cli/browser";
+import { EditorState, type StateEffect, type TransactionSpec } from "@codemirror/state";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  createEditorAnchorTracker,
-  type EditorExtensionHost,
-} from "../src/editor-extension";
-import { isFullReplace } from "../src/reanchor";
-import {
-  makeAnchor,
-  parseDocument,
-  planSuggestionAcceptance,
-  resolveAnchor,
-  serializeDocument,
-} from "../src/store";
-import type { ParsedDoc } from "../src/types";
+import { anchorFieldsFor } from "../src/anchoring";
+import { AnchorTracker, type EditorHost } from "../src/editor-extension";
+import type { Comment, MrsfDocument } from "../src/model";
+import { addComment, retarget } from "../src/mutations";
+import { serializeSidecar } from "../src/sidecar-yaml";
+import { type SidecarIO, SidecarStore } from "../src/store";
+import { editorInfoField, type MockFileInfo } from "./mocks/obsidian";
 
-const TS = "2026-07-23T12:00:00Z";
-
-function acceptanceDoc(): ParsedDoc {
-  const prose = "Very old quote and target";
-  const targetStart = prose.indexOf("target");
-  return {
-    prose,
-    comments: {
-      pending: {
-        anchor: makeAnchor(prose, 0, "Very old quote".length),
-        status: "open",
-        thread: [{ author: "Leon", ts: TS, text: "Keep this thread attached." }],
-      },
-      suggestion: {
-        anchor: makeAnchor(prose, targetStart, prose.length),
-        status: "open",
-        suggestion: {
-          replacement: "a substantially longer ending",
-          author: "Claude",
-          ts: TS,
-        },
-        thread: [],
-      },
-    },
-  };
-}
-
-function singleReplacement(fromText: string, toText: string): { from: number; to: number; insert: string } {
-  let from = 0;
-  while (from < fromText.length && from < toText.length && fromText[from] === toText[from]) from++;
-  let suffix = 0;
-  while (
-    suffix < fromText.length - from &&
-    suffix < toText.length - from &&
-    fromText[fromText.length - 1 - suffix] === toText[toText.length - 1 - suffix]
-  ) {
-    suffix++;
+class MemoryIO implements SidecarIO {
+  files = new Map<string, string>();
+  async read(path: string) {
+    return this.files.get(path) ?? null;
   }
-  return {
-    from,
-    to: fromText.length - suffix,
-    insert: toText.slice(from, toText.length - suffix),
-  };
+  async exists(path: string) {
+    return this.files.has(path);
+  }
+  async write(path: string, content: string) {
+    this.files.set(path, content);
+  }
+  async remove(path: string) {
+    this.files.delete(path);
+  }
+  async rename(from: string, to: string) {
+    const content = this.files.get(from);
+    if (content === undefined) throw new Error("missing");
+    this.files.delete(from);
+    this.files.set(to, content);
+  }
 }
 
-class ExtensionHarness {
-  state: EditorState;
-  applyingSuggestion = false;
-  readonly host: EditorExtensionHost;
-  readonly view: {
-    state: EditorState;
-    requestMeasure: ReturnType<typeof vi.fn>;
-    dispatch: (spec: TransactionSpec) => void;
-  };
-  readonly tracker: ReturnType<typeof createEditorAnchorTracker>;
+const NOTE = "Note.md";
+const TEXT = "# Title\n\nThe quick brown fox jumps.\nSecond line here.\n";
+const ts = "2026-09-16T10:00:00Z";
 
-  constructor(raw: string) {
-    this.state = EditorState.create({ doc: raw });
-    this.host = {
-      settings: { schemaHint: true },
-      isApplyingSuggestion: () => this.applyingSuggestion,
-      openSidebar: vi.fn(),
-    };
-    this.view = {
-      state: this.state,
-      requestMeasure: vi.fn(),
-      dispatch: (spec) => {
-        this.apply(spec);
+function commentOn(text: string, quote: string, id: string): Comment {
+  const from = text.indexOf(quote);
+  return { id, author: "Adam", timestamp: ts, text: "note", resolved: false, ...anchorFieldsFor(text, from, from + quote.length) };
+}
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 50; i++) await Promise.resolve();
+}
+
+class Harness {
+  state: EditorState;
+  readonly io = new MemoryIO();
+  readonly store = new SidecarStore(this.io);
+  readonly tracker: AnchorTracker;
+  readonly threadAtCursor = vi.fn();
+  file: NonNullable<MockFileInfo["file"]>;
+
+  constructor(text: string, comments: Comment[], path = NOTE) {
+    this.file = { path, extension: "md" };
+    const doc: MrsfDocument = { mrsf_version: "1.0", document: path, comments };
+    this.io.files.set(`${path}.review.yaml`, serializeSidecar(null, doc));
+    this.state = this.createState(text);
+    const view = {
+      get state() {
+        return harness.state;
       },
+      requestMeasure: vi.fn(),
+      dispatch: (spec: TransactionSpec) => this.apply(spec),
     };
-    this.tracker = createEditorAnchorTracker(this.view as unknown as EditorView, this.host);
+    const harness = this;
+    const host: EditorHost = {
+      store: this.store,
+      openSidebar: vi.fn(),
+      registerTracker: () => () => undefined,
+      anchorsChanged: vi.fn(),
+      threadAtCursor: this.threadAtCursor,
+    };
+    this.tracker = new AnchorTracker(view as unknown as EditorView, host);
+  }
+
+  private createState(text: string): EditorState {
+    const file = this.file;
+    return EditorState.create({ doc: text, extensions: [editorInfoField.init(() => ({ file }))] });
   }
 
   text(): string {
     return this.state.doc.toString();
   }
 
-  apply(spec: TransactionSpec) {
+  apply(spec: TransactionSpec): void {
     const startState = this.state;
-    const transaction = startState.update(spec);
-    this.state = transaction.state;
-    this.view.state = this.state;
+    const tr = startState.update(spec);
+    this.state = tr.state;
     this.tracker.update({
       startState,
       state: this.state,
-      transactions: [transaction],
-      changes: transaction.changes,
-      docChanged: transaction.docChanged,
+      transactions: [tr],
+      changes: tr.changes,
+      docChanged: tr.docChanged,
+      selectionSet: tr.selection !== undefined,
+      viewportChanged: false,
+    } as unknown as ViewUpdate);
+  }
+
+  /** Simulates Obsidian loading a different note into the same editor. */
+  switchTo(path: string, text: string): void {
+    const startState = this.state;
+    this.file = { path, extension: "md" };
+    this.state = this.createState(text);
+    const tr = startState.update({ changes: { from: 0, to: startState.doc.length, insert: text } });
+    this.tracker.update({
+      startState,
+      state: this.state,
+      transactions: [tr],
+      changes: tr.changes,
+      docChanged: true,
       selectionSet: false,
       viewportChanged: false,
     } as unknown as ViewUpdate);
-    return transaction;
   }
 
-  applyHistoryText(text: string, event: "undo" | "redo") {
-    return this.apply({
-      changes: singleReplacement(this.text(), text),
-      annotations: Transaction.userEvent.of(event),
-    });
+  sidecar(path = NOTE): MrsfDocument {
+    return parseSidecarContent(this.io.files.get(`${path}.review.yaml`) ?? "");
   }
 
-  expectPendingAnchor(): void {
-    const doc = parseDocument(this.text());
-    const anchor = this.tracker.anchors.find(({ id }) => id === "pending");
-    expect(anchor).toBeDefined();
-    expect(doc.prose.slice(anchor!.from, anchor!.to)).toBe("Very new wording quote");
+  highlighted(): string[] {
+    return this.tracker.anchors.map((a) => this.text().slice(a.from, a.to));
+  }
+
+  insert(at: number, text: string, effects: StateEffect<unknown>[] = []): void {
+    this.apply({ changes: { from: at, insert: text }, effects });
   }
 }
 
-describe("editor-extension pending anchors across acceptance history", () => {
+describe("AnchorTracker", () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.stubGlobal("window", {
-      setTimeout: globalThis.setTimeout.bind(globalThis),
-      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
+      clearTimeout: (id: ReturnType<typeof setTimeout>) => clearTimeout(id),
     });
   });
 
@@ -138,63 +144,170 @@ describe("editor-extension pending anchors across acceptance history", () => {
     vi.unstubAllGlobals();
   });
 
-  it.each([
-    ["before the debounce with removal", false, "remove"],
-    ["after the debounce with removal", true, "remove"],
-    ["before the debounce with retained history", false, "keep"],
-    ["after the debounce with retained history", true, "keep"],
-  ] as const)("preserves an unrelated pending reanchor through Undo and Redo %s", (_name, wait, behavior) => {
-    const harness = new ExtensionHarness(serializeDocument(acceptanceDoc(), true));
-    const oldStart = harness.text().indexOf("old");
-    harness.apply({
-      changes: { from: oldStart, to: oldStart + 3, insert: "new wording" },
-      userEvent: "input",
-    });
-    const editedText = harness.text();
-    harness.expectPendingAnchor();
-
-    const plan = planSuggestionAcceptance(editedText, "suggestion", behavior, true);
-    expect(plan.ok).toBe(true);
-    if (!plan.ok) return;
-    harness.applyingSuggestion = true;
-    const acceptance = harness.apply({ changes: plan.changes });
-    harness.applyingSuggestion = false;
-    let changedRanges = 0;
-    acceptance.changes.iterChangedRanges(() => changedRanges++);
-    expect(changedRanges).toBe(1);
-    expect(isFullReplace(acceptance.changes)).toBe(true);
-    harness.expectPendingAnchor();
-
-    if (wait) vi.advanceTimersByTime(800);
-    if (wait) expect(harness.tracker.dirty).toBe(false);
-    const acceptedText = harness.text();
-    const undo = harness.applyHistoryText(editedText, "undo");
-    expect(isFullReplace(undo.changes)).toBe(true);
-    harness.expectPendingAnchor();
-
-    if (wait) vi.advanceTimersByTime(800);
-    if (wait) expect(harness.tracker.dirty).toBe(false);
-    harness.applyHistoryText(acceptedText, "redo");
-    harness.expectPendingAnchor();
-
-    vi.advanceTimersByTime(800);
-    const persisted = parseDocument(harness.text()).comments.pending.anchor;
-    expect(persisted.exact).toBe("Very new wording quote");
-    expect(resolveAnchor(parseDocument(harness.text()).prose, persisted).kind).toBe("resolved");
-    harness.tracker.destroy();
+  it("resolves open comments when the note loads", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a"), { ...commentOn(TEXT, "Second", "b"), resolved: true }]);
+    await settle();
+    expect(h.highlighted()).toEqual(["quick brown"]);
   });
 
-  it("does not preserve pending coordinates through an unrelated external full replace", () => {
-    const harness = new ExtensionHarness(serializeDocument(acceptanceDoc(), true));
-    const oldStart = harness.text().indexOf("old");
-    harness.apply({
-      changes: { from: oldStart, to: oldStart + 3, insert: "new wording" },
-      userEvent: "input",
-    });
+  it("follows edits and writes fresh positions once typing pauses", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+    await settle();
+    h.insert(0, "Intro\n");
+    expect(h.highlighted()).toEqual(["quick brown"]);
+    expect(h.sidecar().comments[0].line).toBe(3);
+    vi.advanceTimersByTime(1000);
+    await settle();
+    expect(h.sidecar().comments[0]).toMatchObject({ line: 4, start_column: 4, end_column: 15 });
+  });
 
-    const replacement = "Entirely unrelated external document.";
-    harness.apply({ changes: { from: 0, to: harness.text().length, insert: replacement } });
-    expect(harness.tracker.anchors).toEqual([]);
-    harness.tracker.destroy();
+  it("records drift when the quoted text itself is edited", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+    await settle();
+    h.apply({ changes: { from: TEXT.indexOf("quick"), to: TEXT.indexOf("quick") + 5, insert: "slow" } });
+    vi.advanceTimersByTime(1000);
+    await settle();
+    expect(h.highlighted()).toEqual(["slow brown"]);
+    expect(h.sidecar().comments[0]).toMatchObject({ selected_text: "quick brown", anchored_text: "slow brown" });
+  });
+
+  it("keeps live positions when other comments are added", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+    await settle();
+    h.insert(0, "Intro\n");
+    const text = h.text();
+    await h.store.update(NOTE, (doc) => {
+      addComment(doc, { id: "b", author: "A", timestamp: ts, text: "x" }, anchorFieldsFor(text, text.indexOf("Second"), text.indexOf("Second") + 6));
+    });
+    await settle();
+    expect(h.highlighted()).toEqual(["quick brown", "Second"]);
+  });
+
+  it("re-resolves a comment re-targeted by someone else", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+    await settle();
+    const from = TEXT.indexOf("Second");
+    await h.store.update(NOTE, (doc) => retarget(doc, "a", { ...anchorFieldsFor(TEXT, from, from + 6), selected_text: "Second" }));
+    await settle();
+    expect(h.highlighted()).toEqual(["Second"]);
+  });
+
+  it("stops highlighting resolved threads", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+    await settle();
+    await h.store.update(NOTE, (doc) => {
+      doc.comments[0].resolved = true;
+    });
+    await settle();
+    expect(h.highlighted()).toEqual([]);
+  });
+
+  it("saves pending positions for the previous note when the editor switches notes", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+    await settle();
+    h.insert(0, "Intro\n");
+    const other = "Other note.\n";
+    h.io.files.set("Other.md.review.yaml", serializeSidecar(null, { mrsf_version: "1.0", document: "Other.md", comments: [commentOn(other, "Other", "o")] }));
+    h.switchTo("Other.md", other);
+    await settle();
+    expect(h.sidecar().comments[0]).toMatchObject({ line: 4, start_column: 4 });
+    expect(h.highlighted()).toEqual(["Other"]);
+    vi.advanceTimersByTime(1000);
+    await settle();
+    expect(h.sidecar().comments[0]).toMatchObject({ line: 4, start_column: 4 });
+  });
+
+  it("re-resolves everything after a whole-document replacement", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+    await settle();
+    const replaced = "Completely new start.\n\nAnd then: The quick brown fox jumps.\n";
+    h.apply({ changes: { from: 0, to: h.text().length, insert: replaced } });
+    expect(h.highlighted()).toEqual(["quick brown"]);
+    vi.advanceTimersByTime(1000);
+    await settle();
+    expect(h.sidecar().comments[0]).toMatchObject({ line: 3 });
+  });
+
+  it("keeps writing positions across consecutive flushes", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+    await settle();
+    h.insert(0, "One\n");
+    h.tracker.flush();
+    h.insert(0, "Two\n");
+    h.tracker.flush();
+    await settle();
+    expect(h.sidecar().comments[0].line).toBe(5);
+  });
+
+  it("doesn't overwrite a re-target that lands just before its write", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+    await settle();
+    h.insert(0, "Intro\n");
+    // Someone else re-targets the comment directly on disk, then the tracker flushes.
+    const retargeted = parseSidecarContent(h.io.files.get("Note.md.review.yaml") ?? "");
+    Object.assign(retargeted.comments[0], { selected_text: "Second", line: 4, end_line: 4, start_column: 0, end_column: 6 });
+    h.io.files.set("Note.md.review.yaml", serializeSidecar(null, retargeted));
+    h.tracker.flush();
+    await settle();
+    expect(h.sidecar().comments[0]).toMatchObject({ selected_text: "Second", line: 4, start_column: 0 });
+    expect(h.sidecar().comments[0].anchored_text).toBeUndefined();
+  });
+
+  it("doesn't save a guessed position for an ambiguous quote", async () => {
+    const text = "fox one\nfox two\n";
+    const comment: Comment = { id: "a", author: "A", timestamp: ts, text: "x", resolved: false, selected_text: "fox" };
+    const h = new Harness(text, [comment]);
+    await settle();
+    expect(h.highlighted()).toEqual(["fox"]);
+    h.insert(text.length, "more\n");
+    vi.advanceTimersByTime(1000);
+    await settle();
+    expect(h.sidecar().comments[0].line).toBeUndefined();
+  });
+
+  it("announces the thread under the cursor and marks its highlight active", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a"), commentOn(TEXT, "Second", "b")]);
+    await settle();
+    h.apply({ selection: { anchor: TEXT.indexOf("brown") } });
+    expect(h.threadAtCursor).toHaveBeenLastCalledWith(NOTE, "a");
+    const active: string[] = [];
+    h.tracker.decorations.between(0, h.text().length, (from, to, deco) => {
+      if (String(deco.spec.class).includes("sm-highlight-active")) active.push(h.text().slice(from, to));
+    });
+    expect(active).toEqual(["quick brown"]);
+    h.apply({ selection: { anchor: TEXT.indexOf("Second") + 2 } });
+    expect(h.threadAtCursor).toHaveBeenLastCalledWith(NOTE, "b");
+    h.apply({ selection: { anchor: 0 } });
+    expect(h.threadAtCursor).toHaveBeenLastCalledWith(NOTE, null);
+    h.apply({ selection: { anchor: 1 } });
+    expect(h.threadAtCursor).toHaveBeenCalledTimes(4);
+    h.apply({ changes: { from: h.text().length, insert: "x" } });
+    expect(h.threadAtCursor).toHaveBeenCalledTimes(4);
+  });
+
+  it("marks suggestion highlights differently", async () => {
+    const suggestion = { ...commentOn(TEXT, "Second", "s"), type: "suggestion", x_suggestion: { replacement: "2nd" } };
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a"), suggestion]);
+    await settle();
+    const classes: string[] = [];
+    h.tracker.decorations.between(0, h.text().length, (_from, _to, deco) => {
+      classes.push(String(deco.spec.class));
+    });
+    expect(classes).toEqual(["sm-highlight", "sm-highlight sm-highlight-suggestion"]);
+  });
+
+  it("follows a renamed note", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+    await settle();
+    // Obsidian renames the editor's TFile in place.
+    h.file.path = "Renamed.md";
+    h.tracker.noteRenamed("Renamed.md");
+    await h.store.noteRenamed(NOTE, "Renamed.md");
+    const text = h.text();
+    await h.store.update("Renamed.md", (doc) => {
+      addComment(doc, { id: "b", author: "A", timestamp: ts, text: "x" }, anchorFieldsFor(text, text.indexOf("Second"), text.indexOf("Second") + 6));
+    });
+    await settle();
+    expect(h.highlighted()).toEqual(["quick brown", "Second"]);
   });
 });

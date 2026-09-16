@@ -1,85 +1,57 @@
-import type { ResolvedComment } from "./types";
-
-export type ExportScope = "all" | "open";
+import type { Resolution } from "./anchoring";
+import { type Comment, suggestionOf, type Thread } from "./model";
 
 export function formatTs(ts: string): string {
   const d = new Date(ts);
-  return isNaN(d.getTime()) ? ts : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? ts : d.toLocaleString();
 }
 
-interface FormatOptions {
-  includeQuote: boolean;
-  formatTs?: (ts: string) => string;
-}
-
-export function formatComment(r: ResolvedComment, opts: FormatOptions): string {
-  const fmt = opts.formatTs ?? ((ts: string) => ts);
-  const thread = r.comment.thread.map((e) => `**${e.author}** (${fmt(e.ts)}): ${e.text}`).join("\n");
-  const suggestion = r.comment.suggestion;
-  const replacement =
-    typeof suggestion?.replacement === "string"
-      ? suggestion.replacement
-      : "[Invalid suggestion: replacement must be text]";
-  const proposal = suggestion
-    ? [
-        `**Suggested edit by ${suggestion.author}** (${fmt(suggestion.ts)})${
-          suggestion.result ? ` — ${suggestion.result}` : ""
-        }:`,
-        replacement
-          .split("\n")
-          .map((line) => `> ${line}`)
-          .join("\n"),
-      ].join("\n")
-    : "";
-  const body = [proposal, thread].filter(Boolean).join("\n\n");
-  if (!opts.includeQuote) return body;
-  const quote = r.comment.anchor.exact
+function quote(text: string): string {
+  return text
     .split("\n")
-    .map((l) => "> " + l)
+    .map((line) => `> ${line}`)
     .join("\n");
-  return body ? quote + "\n\n" + body : quote;
 }
 
-/** Zeichen, die in Dateinamen oder Wikilinks Probleme machen. */
-const INVALID_FILENAME_CHARS = /[\\/:*?"<>|#^[\]]/g;
-
-export function renderExportFileName(template: string, filename: string, date: string): string {
-  const rendered = template
-    .replaceAll("{{filename}}", filename)
-    .replaceAll("{{date}}", date)
-    .replace(INVALID_FILENAME_CHARS, "-")
-    .trim();
-  return rendered || `${filename.replace(INVALID_FILENAME_CHARS, "-")} – Comments`;
+function entryLine(comment: Comment): string {
+  return `**${String(comment.author)}** (${formatTs(String(comment.timestamp))}): ${String(comment.text)}`;
 }
 
-export function resolveExportDirectory(
-  sourceParentPath: string | null,
-  destination: "source" | "folder",
-  selectedFolder: string
-): string {
-  if (destination === "folder") return selectedFolder;
-  return sourceParentPath && sourceParentPath !== "/" ? sourceParentPath : "";
+/** A thread as Markdown, for copying to the clipboard or exporting. */
+export function formatThread(thread: Thread, includeQuote: boolean): string {
+  const { root } = thread;
+  const suggestion = suggestionOf(root);
+  const parts: string[] = [];
+  if (includeQuote && root.selected_text) parts.push(quote(root.selected_text));
+  if (suggestion) {
+    const outcome = suggestion.result ? ` — ${suggestion.result}` : "";
+    parts.push(
+      `**Suggested edit by ${String(root.author)}** (${formatTs(String(root.timestamp))})${outcome}:\n${quote(suggestion.replacement)}`
+    );
+  }
+  const entries = [...(suggestion && !root.text ? [] : [root]), ...thread.replies].map(entryLine);
+  if (entries.length > 0) parts.push(entries.join("\n"));
+  return parts.join("\n\n");
 }
 
-interface ExportOptions {
-  scope: ExportScope;
-  date: string;
-  formatTs?: (ts: string) => string;
+export interface ResolvedThread {
+  thread: Thread;
+  resolution: Resolution;
 }
 
-export function buildExportNote(sourceName: string, all: ResolvedComment[], opts: ExportOptions): string | null {
-  const startOf = (r: ResolvedComment) => (r.resolution.kind === "resolved" ? r.resolution.start : 0);
-  const open = all
-    .filter((r) => r.comment.status === "open" && r.resolution.kind === "resolved")
+/** A standalone note listing a note's threads, or null when there is nothing to export. */
+export function buildExportNote(sourceName: string, threads: ResolvedThread[], date: string): string | null {
+  const startOf = (t: ResolvedThread) => (t.resolution.kind === "resolved" ? t.resolution.from : 0);
+  const open = threads
+    .filter((t) => !t.thread.root.resolved && t.resolution.kind === "resolved")
     .sort((a, b) => startOf(a) - startOf(b));
-  const orphans = all.filter((r) => r.comment.status === "open" && r.resolution.kind === "orphaned");
-  const done = opts.scope === "all" ? all.filter((r) => r.comment.status === "resolved") : [];
+  const orphans = threads.filter((t) => !t.thread.root.resolved && t.resolution.kind === "orphaned");
+  const done = threads.filter((t) => t.thread.root.resolved);
   if (!open.length && !orphans.length && !done.length) return null;
-
-  const fmt = (r: ResolvedComment) => formatComment(r, { includeQuote: true, formatTs: opts.formatTs });
-  const sections: string[] = [`# Comments: ${sourceName}`, `Exported from [[${sourceName}]] on ${opts.date}`];
-  if (open.length) sections.push("## Open", ...open.map(fmt));
-  if (done.length) sections.push("## Resolved", ...done.map(fmt));
-  if (orphans.length) sections.push("## Orphaned", ...orphans.map(fmt));
+  const format = (t: ResolvedThread) => formatThread(t.thread, true);
+  const sections = [`Exported from [[${sourceName}]] on [[${date}]].`];
+  if (open.length) sections.push("# Open", ...open.map(format));
+  if (done.length) sections.push("# Resolved", ...done.map(format));
+  if (orphans.length) sections.push("# Orphaned", ...orphans.map(format));
   return sections.join("\n\n") + "\n";
 }

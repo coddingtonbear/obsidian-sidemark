@@ -1,138 +1,117 @@
-# Tandem Comments
+# Sidemark for Obsidian
 
-Quote-anchored comments and edit suggestions for [Obsidian](https://obsidian.md) notes. Review threads live in a single block at the end of the file — your prose stays untouched until you accept a suggestion, and AI assistants can read, write, and act on them with nothing but file access.
+> [!NOTE]
+> Sidemark is an unofficial fork of [Tandem Comments](https://github.com/leonpawelzik/obsidian-tandem-comments) by Leon Pawelzik. Its editor experience (highlights, the comment sidebar, suggestions, table support, and settings) is Tandem Comments' work; the git history before the fork is theirs. Sidemark changes where comments are stored: instead of a block inside each note, it uses [MRSF](https://github.com/wictorwilen/MRSF) sidecar files. If you're happy with comments stored inside your notes, use Tandem Comments.
 
-![Tandem Comments demo](docs/demo.gif)
+Comments and edit suggestions for Obsidian notes, stored **next to** each note instead of inside it.
+
+Select text and add a comment or suggest an edit. The passage is highlighted in the editor, and the discussion lives in a sidebar. Everything is saved to a sidecar file, `Your Note.md.review.yaml`, in the [MRSF / Sidemark](https://github.com/wictorwilen/MRSF) format. Your notes stay plain Markdown, and other tools see nothing unusual in them.
+
+Because the sidecars are standard MRSF, the same comments work with the [Sidemark VS Code extension](https://marketplace.visualstudio.com/items?itemName=wictor.mrsf-vscode), the `mrsf` command-line tool, and the `@mrsf/mcp` server for AI assistants.
 
 ## Features
 
-- **Comment on any selection** — via command palette, hotkey, or right-click menu
-- **Suggest edits** — propose a replacement for selected text, then accept or decline it from the sidebar
-- **Sidebar threads:** reply, edit, resolve, reopen, delete, and re-anchor orphaned comments, with configurable sorting, timestamps, and submission shortcuts
-- **Per-author colors:** distinguish participants automatically, with optional exact color overrides, light and dark previews, and contrast warnings
-- **Live highlights** in the editor; click a highlight to jump to its thread
-- **Live re-anchoring** — comments follow your text as you edit; if an anchor's text disappears, the comment becomes *orphaned* and can be re-attached to a new selection
-- **Resolve = remove** by default, keeping files clean (history mode available in settings)
-- **Copy & export** — copy any comment as Markdown (with or without its quote), or export all of a file's comments to a companion note; name template, scope, and destination are configurable in settings
-- **Reading view pill** — the comment block renders as a compact "💬 N threads" pill that can be hidden in settings
-- **AI-ready by design** — the block is plain, self-describing JSON; the settings tab exports a skill file that teaches Claude Code the format
+- Comment on any selected text, reply in threads, then resolve or reopen them.
+- Suggest an edit (a replacement for the selected text), then accept or decline it. Accepting rewrites the passage in the note.
+- Highlights follow the text as you type, including inside tables. Updated positions are saved to the sidecar automatically.
+- **Drift:** when the commented text itself is edited, the sidebar shows what it now reads. MRSF keeps the reviewer's original selection in `selected_text` and the current text in `anchored_text`.
+- **Orphans:** comments whose passage was deleted are listed as orphaned, and "Re-anchor to selection" attaches them to new text.
+- **Outside edits:** changes to the note or its sidecar made outside Obsidian (sync, git, an AI assistant, the `mrsf` tool) are picked up live.
+- **Renames and deletes:** renaming or moving a note moves its sidecar and updates its `document` field; renaming a folder is handled too. Deleting a note moves its sidecar to the trash with it.
+- Comment text is rendered as Markdown, so `[[wikilinks]]` work and show hover previews.
+- Commands to export a note's comments to a new note, and to remove resolved threads.
+- **Tandem Comments conversion:** a button in settings (also available as a command) converts every note's `tandem-comments` block into a sidecar.
 
-## Installation
+## Installing (manually, for now)
 
-Tandem Comments is in the [Obsidian community plugin directory](https://obsidian.md/plugins?id=tandem-comments): in Obsidian, open **Settings → Community plugins → Browse**, search for **Tandem Comments**, then **Install** and **Enable**.
+1. Run `npm install && npm run build`.
+2. Copy `main.js`, `manifest.json` and `styles.css` into `<your vault>/.obsidian/plugins/sidemark/`.
+3. Enable **Sidemark** under *Settings → Community plugins*.
 
-Manual install: download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/leonpawelzik/obsidian-tandem-comments/releases/latest) into `<vault>/.obsidian/plugins/tandem-comments/` and enable it in **Settings → Community plugins**.
+If you use Obsidian Sync, turn on syncing of "other file types" so the `.review.yaml` files are synced.
 
-## How it works
+## Using it
 
-Comments are stored in a fenced code block at the **end of the file**. The text above it is never modified by commenting — no inline markers, no HTML spans, no IDs in your prose.
+- **Add a comment:** select text, then use *Add comment* from the right-click menu or the command palette. Type in the sidebar and press Enter.
+- **Suggest an edit:** select text, then use *Suggest edit*. Edit the proposed replacement and optionally explain why.
+- **Open a thread:** click a highlight to open its thread; click the quote in the sidebar to jump to the passage.
+- **Edit your own text:** double-click a comment's text to edit it. The `…` menu copies or deletes a comment.
+- **Undoing an accepted suggestion:** Undo restores the note's text, but the suggestion stays marked accepted. Use *Show resolved* → *Reopen* to act on it again.
 
-````markdown
-Your note text. We should cut prices hard in Q3.
+## The file format
 
-```tandem-comments
-// Schema: { "<id>": { anchor:{exact,prefix,suffix,pos?}, status:open|resolved, thread:[{author,ts,text}], suggestion?:{replacement,author,ts,result?} } }
-// Anchor = quote from the prose. To locate: search for "exact", disambiguate via prefix/suffix.
-{
-  "a1f3": {
-    "anchor": { "exact": "cut prices hard", "prefix": "We should ", "suffix": " in Q3", "pos": 26 },
-    "status": "open",
-    "thread": [
-      { "author": "Leon", "ts": "2026-06-10T10:24:00Z", "text": "Too aggressive?" }
-    ]
-  }
-}
-```
-````
+Sidecars follow MRSF v1.0. Sidemark adds a few extension fields, which MRSF tools keep intact:
 
-Each comment is anchored by a quote ([W3C TextQuoteSelector](https://www.w3.org/TR/annotation-model/#text-quote-selector)): the exact text plus a little surrounding context, with a character offset as tie-breaker.
+| Field | Meaning |
+| --- | --- |
+| `x_prefix` / `x_suffix` | Up to 20 characters around the quote, used to tell identical quotes apart. |
+| `x_suggestion` | `{ replacement, result? }` on a root comment with `type: suggestion`. The root's `text` is the optional explanation; `result` is `accepted` or `declined` once decided. |
+| `x_tandem_id` | The original ID of a comment converted from Tandem Comments. |
 
-## Usage
+An example:
 
-1. Select text in a Markdown note
-2. Run **Add comment** or **Suggest edit** (command palette or right-click)
-3. Use the sidebar to discuss comments or accept and decline proposed replacements
-
-## Edit suggestions
-
-Suggestions use the same quote anchors and discussion threads as comments. The
-original prose is not changed until you press **Accept**:
-
-```json
-{
-  "7c2e": {
-    "anchor": {
-      "exact": "cut prices hard",
-      "prefix": "We should ",
-      "suffix": " in Q3.",
-      "pos": 26
-    },
-    "status": "open",
-    "suggestion": {
-      "replacement": "reduce prices significantly",
-      "author": "Claude",
-      "ts": "2026-07-23T12:00:00Z"
-    },
-    "thread": [
-      {
-        "author": "Claude",
-        "ts": "2026-07-23T12:00:00Z",
-        "text": "Keeps the recommendation strong without sounding abrupt."
-      }
-    ]
-  }
-}
+```yaml
+mrsf_version: "1.0"
+document: Projects/Plan.md
+comments:
+  - id: 0818f29c-400a-4124-8420-185d6fdc18fa
+    author: Adam
+    timestamp: 2026-09-16T08:53:51.151Z
+    text: Is this too cliché? See [[Style guide]]
+    resolved: false
+    line: 7
+    end_line: 7
+    start_column: 4
+    end_column: 15
+    selected_text: quick brown
+    anchored_text: QUICK brown
+    x_prefix: "The "
+    x_suffix: " fox jumps over the "
+  - id: 27f0f28c-0559-4c46-8951-5d2359b8bb6c
+    author: Claude
+    timestamp: 2026-09-16T08:54:12.000Z
+    text: Agreed, rewording.
+    resolved: false
+    reply_to: 0818f29c-400a-4124-8420-185d6fdc18fa
 ```
 
-Accepting replaces only the uniquely matched quoted passage. If the passage is
-missing or matches more than one location, Tandem Comments refuses to apply the
-change until you re-anchor it. Other uniquely resolved open anchors are rebased
-through the edit in the same transaction; ambiguous anchors are left unchanged
-rather than silently bound to one duplicate. The prose edit and suggestion update
-share one editor transaction, so a single Undo restores both.
+Where Sidemark deliberately differs from the spec:
 
-## Working with AI assistants
+- **Comment text is rendered as Markdown**, although MRSF defines it as plain text.
+- **Resolving a thread resolves its replies too.** MRSF tracks `resolved` on each comment separately; the spec allows resolving them together.
+- **Deleting a thread's first comment deletes the whole thread.** Deleting a reply follows MRSF §9.1: any replies to it are kept and re-attached to its parent.
 
-Because comments are plain JSON inside the note, an assistant needs no plugin, API, or MCP server — reading and writing the file is enough. Ask it to review a note and it can answer in your comment threads or propose exact replacements as suggestions. You stay in control of when the prose changes.
+The plugin never rewrites a sidecar it can't fully parse. It shows the error in the sidebar and leaves the file alone. When it does write, unchanged parts keep their formatting and YAML comments.
 
-This shines on long-form writing, where you usually want subtle, surgical changes — not an AI rewrite of the whole piece. Comments pin your feedback to exact passages, and the assistant edits only what you pointed at:
+## Working with AI assistants and other tools
 
-```markdown
-The morning market in Hoi An wakes before the tourists do. Vendors stack
-mangosteen into careful pyramids while the river light is still gray.
-…2,000 more words…
+Run MRSF tools from the vault root so `document` paths match:
+
+```sh
+npx @mrsf/cli list "Projects/Plan.md"
+npx @mrsf/cli add "Projects/Plan.md" -a "Claude" -t "Consider a table here" -l 12 --selected-text "the three options"
+npx @mrsf/cli reanchor "Projects/Plan.md"
 ```
 
-You leave comments where the draft needs work — *"weaker verb here?"* on one sentence, *"this paragraph drags, tighten it"* on another — then hand off:
+Anything these tools write shows up in Obsidian immediately.
 
-> ❯ claude "turn my comments in hoi-an-draft.md into edit suggestions — keep the prose unchanged"
+## Limitations
 
-Claude proposes replacements for those two passages and explains each change in
-its thread. The prose stays byte-for-byte identical until you review the
-suggestions in Obsidian and accept the ones you want.
+- No highlights in Reading view; comments are shown in the sidebar and in the editor (Live Preview and Source mode).
+- The positions of resolved threads aren't updated while you type. They are found again from their text when reopened.
+- There is no runtime schema validation (it would double the bundle size); use `mrsf validate` for strict checks.
+- Sidecars are always stored next to their notes; MRSF's `sidecar_root` setting isn't supported yet.
 
-For Claude Code, open **Settings → Tandem Comments → Advanced & integrations** and use **Export skill**. This writes a ready-made skill to `~/.claude/skills/obsidian-tandem-comments/` that teaches it the format and conventions.
+## Development
 
-## Why a block at the end of the file?
+```sh
+npm install
+npm run build   # type-check and bundle to main.js
+npm run dev     # rebuild on change
+npm test        # vitest
+```
 
-Inline comment markers break plain-text workflows: they show up in exports, confuse other tools, and make diffs noisy. Tandem Comments keeps annotations out of your prose entirely — the file remains a normal Markdown document that happens to carry its review thread with it.
+## Credits
 
-## Security
-
-Comment bodies are rendered with Obsidian's Markdown renderer and inherit its supported syntax, sanitization, and plugin post-processor behavior. Tandem Comments does not add a separate post-render HTML sanitizer.
-
-The real sanitizer cannot run under the test harness (Node/Vitest has no Obsidian runtime). The following smoke-test matrix was verified manually with Obsidian 1.12.4:
-
-| Comment input | Observed result |
-|---|---|
-| `**bold**`, `_italic_` | Renders bold / italic |
-| `[link](https://example.com)` | Renders a clickable, safe link |
-| Paragraph, blank line, paragraph | Two paragraphs with compact spacing |
-| `<script>alert(1)</script>` | Not executed; script neutralized |
-| `<img src=x onerror=alert(1)>` | No alert; `onerror` stripped |
-| `[x](javascript:alert(1))` | Click does nothing; scheme neutralized |
-| `<a href="vbscript:…">`, `data:` URL | Neutralized |
-
-## License
-
-[MIT](LICENSE)
+- Sidemark is forked from [Tandem Comments](https://github.com/leonpawelzik/obsidian-tandem-comments) by Leon Pawelzik and its contributors (MIT). The editor highlighting, table support, sidebar, suggestions and settings are their design and code, adapted here; see the git history before the fork for their work.
+- The storage format and the anchoring library (`@mrsf/cli`) come from [MRSF](https://github.com/wictorwilen/MRSF) by Wictor Wilén (MIT).

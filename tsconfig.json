@@ -3,7 +3,7 @@
     "baseUrl": ".",
     "target": "ES2021",
     "module": "ESNext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "lib": ["DOM", "ES2021"],
     "strict": true,
     "esModuleInterop": true,

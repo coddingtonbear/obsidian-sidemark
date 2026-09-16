@@ -1,16 +1,12 @@
 import { normalizeAuthorColorOverrides, type AuthorColorOverrides } from "./author-color";
+import type { ResolveBehavior } from "./mutations";
 
-export const SETTINGS_VERSION = 1;
-
-export type ResolveBehavior = "keep" | "remove";
-export type ExportScope = "all" | "open";
-export type ExportDestination = "source" | "folder";
+export type { ResolveBehavior };
 export type SidebarSortOrder = "document" | "newest" | "oldest";
 export type SubmitShortcut = "enter" | "mod-enter";
 export type TimestampDisplay = "full" | "compact" | "relative" | "hidden";
 
-export interface CommentsSettings {
-  settingsVersion: number;
+export interface SidemarkSettings {
   highlightColor: string;
   highlightOpacity: number;
   colorAuthorNames: boolean;
@@ -20,48 +16,30 @@ export interface CommentsSettings {
   submitShortcut: SubmitShortcut;
   timestampDisplay: TimestampDisplay;
   confirmDestructiveActions: boolean;
-  showReadingViewIndicator: boolean;
-  schemaHint: boolean;
-  copyIncludeQuote: boolean;
-  exportNameTemplate: string;
-  exportScope: ExportScope;
-  exportDestination: ExportDestination;
-  exportFolder: string;
   authorColorOverrides: AuthorColorOverrides;
+  /** Whether the comment panel has been added to the sidebar once already. */
+  sidebarAdded: boolean;
 }
 
-export const DEFAULT_SETTINGS: CommentsSettings = {
-  settingsVersion: SETTINGS_VERSION,
+export const DEFAULT_SETTINGS: SidemarkSettings = {
   highlightColor: "#ffd54a",
   highlightOpacity: 30,
   colorAuthorNames: true,
   showResolvedByDefault: false,
-  resolveBehavior: "remove",
+  // Resolved threads live in the sidecar, not the note, so keeping them as
+  // history costs nothing in the note itself.
+  resolveBehavior: "keep",
   sidebarSortOrder: "document",
   submitShortcut: "enter",
   timestampDisplay: "full",
   confirmDestructiveActions: true,
-  showReadingViewIndicator: true,
-  schemaHint: true,
-  copyIncludeQuote: true,
-  exportNameTemplate: "{{filename}} – Comments",
-  exportScope: "all",
-  exportDestination: "source",
-  exportFolder: "",
   authorColorOverrides: {},
+  sidebarAdded: false,
 };
-
-export interface ParsedCommentsSettings {
-  settings: CommentsSettings;
-  legacyAuthorName?: string;
-  changed: boolean;
-}
 
 export interface SettingsEffects {
   refreshHighlights: boolean;
-  refreshAuthorColors: boolean;
   refreshSidebar: boolean;
-  refreshReadingViewIndicator: boolean;
   resetResolvedVisibility: boolean;
 }
 
@@ -73,12 +51,8 @@ function booleanSetting(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
-function stringSetting(value: unknown, fallback: string): string {
-  return typeof value === "string" ? value : fallback;
-}
-
 function enumSetting<T extends string>(value: unknown, values: readonly T[], fallback: T): T {
-  return typeof value === "string" && values.includes(value as T) ? (value as T) : fallback;
+  return typeof value === "string" && (values as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
 function opacitySetting(value: unknown): number {
@@ -86,108 +60,58 @@ function opacitySetting(value: unknown): number {
   return Math.min(80, Math.max(10, Math.round(value)));
 }
 
-export function normalizeVaultFolderPath(value: unknown): string {
-  if (typeof value !== "string") return "";
-  return value.trim().replace(/^\/+|\/+$/g, "").replace(/\/{2,}/g, "/");
-}
-
-export function validateVaultFolderPath(value: string): string | null {
-  const path = normalizeVaultFolderPath(value);
-  if (path.split("/").some((part) => part === "." || part === "..")) {
-    return "Choose a folder inside the vault.";
-  }
-  return null;
-}
-
-export function parseCommentsSettings(value: unknown): ParsedCommentsSettings {
+/** Turns whatever `loadData()` returned into complete, valid settings. */
+export function parseSettings(value: unknown): SidemarkSettings {
   const raw = isRecord(value) ? value : {};
-  const template = stringSetting(raw.exportNameTemplate, DEFAULT_SETTINGS.exportNameTemplate)
-    .trim()
-    .replace(/\.md$/i, "");
-  const resolveBehavior = enumSetting(
-    raw.resolveBehavior,
-    ["keep", "remove"] as const,
-    DEFAULT_SETTINGS.resolveBehavior
-  );
-  const settings: CommentsSettings = {
-    settingsVersion: SETTINGS_VERSION,
+  return {
     highlightColor:
       typeof raw.highlightColor === "string" && /^#[0-9a-f]{6}$/i.test(raw.highlightColor)
         ? raw.highlightColor.toLowerCase()
         : DEFAULT_SETTINGS.highlightColor,
     highlightOpacity: opacitySetting(raw.highlightOpacity),
     colorAuthorNames: booleanSetting(raw.colorAuthorNames, DEFAULT_SETTINGS.colorAuthorNames),
-    showResolvedByDefault:
-      resolveBehavior === "keep" &&
-      booleanSetting(raw.showResolvedByDefault, DEFAULT_SETTINGS.showResolvedByDefault),
-    resolveBehavior,
+    showResolvedByDefault: booleanSetting(raw.showResolvedByDefault, DEFAULT_SETTINGS.showResolvedByDefault),
+    resolveBehavior: enumSetting(raw.resolveBehavior, ["keep", "remove"] as const, DEFAULT_SETTINGS.resolveBehavior),
     sidebarSortOrder: enumSetting(
       raw.sidebarSortOrder,
       ["document", "newest", "oldest"] as const,
       DEFAULT_SETTINGS.sidebarSortOrder
     ),
-    submitShortcut: enumSetting(
-      raw.submitShortcut,
-      ["enter", "mod-enter"] as const,
-      DEFAULT_SETTINGS.submitShortcut
-    ),
+    submitShortcut: enumSetting(raw.submitShortcut, ["enter", "mod-enter"] as const, DEFAULT_SETTINGS.submitShortcut),
     timestampDisplay: enumSetting(
       raw.timestampDisplay,
       ["full", "compact", "relative", "hidden"] as const,
       DEFAULT_SETTINGS.timestampDisplay
     ),
-    confirmDestructiveActions: booleanSetting(
-      raw.confirmDestructiveActions,
-      DEFAULT_SETTINGS.confirmDestructiveActions
-    ),
-    showReadingViewIndicator: booleanSetting(
-      raw.showReadingViewIndicator,
-      DEFAULT_SETTINGS.showReadingViewIndicator
-    ),
-    schemaHint: booleanSetting(raw.schemaHint, DEFAULT_SETTINGS.schemaHint),
-    copyIncludeQuote: booleanSetting(raw.copyIncludeQuote, DEFAULT_SETTINGS.copyIncludeQuote),
-    exportNameTemplate: template || DEFAULT_SETTINGS.exportNameTemplate,
-    exportScope: enumSetting(raw.exportScope, ["all", "open"] as const, DEFAULT_SETTINGS.exportScope),
-    exportDestination: enumSetting(
-      raw.exportDestination,
-      ["source", "folder"] as const,
-      DEFAULT_SETTINGS.exportDestination
-    ),
-    exportFolder:
-      validateVaultFolderPath(stringSetting(raw.exportFolder, DEFAULT_SETTINGS.exportFolder)) === null
-        ? normalizeVaultFolderPath(raw.exportFolder)
-        : DEFAULT_SETTINGS.exportFolder,
+    confirmDestructiveActions: booleanSetting(raw.confirmDestructiveActions, DEFAULT_SETTINGS.confirmDestructiveActions),
     authorColorOverrides: normalizeAuthorColorOverrides(raw.authorColorOverrides),
-  };
-  const legacyAuthorName = typeof raw.authorName === "string" ? raw.authorName.trim() : undefined;
-  return {
-    settings,
-    legacyAuthorName: legacyAuthorName || undefined,
-    changed: JSON.stringify(value ?? {}) !== JSON.stringify(settings),
+    sidebarAdded: booleanSetting(raw.sidebarAdded, DEFAULT_SETTINGS.sidebarAdded),
   };
 }
 
-export function validateExportNameTemplate(value: string): string | null {
-  if (!value.trim()) return "Enter an export note name.";
-  if (/\.md\s*$/i.test(value)) return "Leave off the .md extension; Tandem Comments adds it automatically.";
-  return null;
-}
-
-export function settingsEffects(previous: CommentsSettings, next: CommentsSettings): SettingsEffects {
+export function settingsEffects(previous: SidemarkSettings, next: SidemarkSettings): SettingsEffects {
   const resetResolvedVisibility = previous.showResolvedByDefault !== next.showResolvedByDefault;
   return {
     refreshHighlights:
-      previous.highlightColor !== next.highlightColor ||
-      previous.highlightOpacity !== next.highlightOpacity,
-    refreshAuthorColors:
-      previous.colorAuthorNames !== next.colorAuthorNames ||
-      JSON.stringify(previous.authorColorOverrides) !== JSON.stringify(next.authorColorOverrides),
+      previous.highlightColor !== next.highlightColor || previous.highlightOpacity !== next.highlightOpacity,
     refreshSidebar:
       resetResolvedVisibility ||
       previous.sidebarSortOrder !== next.sidebarSortOrder ||
-      previous.timestampDisplay !== next.timestampDisplay,
-    refreshReadingViewIndicator:
-      previous.showReadingViewIndicator !== next.showReadingViewIndicator,
+      previous.timestampDisplay !== next.timestampDisplay ||
+      previous.colorAuthorNames !== next.colorAuthorNames ||
+      previous.submitShortcut !== next.submitShortcut,
     resetResolvedVisibility,
   };
+}
+
+interface SubmitKeyEvent {
+  key: string;
+  shiftKey: boolean;
+  metaKey: boolean;
+  ctrlKey: boolean;
+}
+
+export function shouldSubmitComment(event: SubmitKeyEvent, shortcut: SubmitShortcut): boolean {
+  if (event.key !== "Enter") return false;
+  return shortcut === "enter" ? !event.shiftKey && !event.metaKey && !event.ctrlKey : event.metaKey || event.ctrlKey;
 }
