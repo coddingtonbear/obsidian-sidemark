@@ -312,3 +312,27 @@
 .sm-error {
   color: var(--text-error);
 }
+
+/* Accept/decline buttons shown when hovering a suggestion in the note. */
+.cm-tooltip:has(> .sm-suggestion-tooltip) {
+  background: transparent;
+  border: none;
+}
+
+.sm-suggestion-tooltip {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 4px);
+  box-shadow: var(--shadow-s);
+}
+
+.sm-suggestion-tooltip button:first-child:hover {
+  color: var(--color-green, #3fb950);
+}
+
+.sm-suggestion-tooltip button:last-child:hover {
+  color: var(--color-red, #e5534b);
+}

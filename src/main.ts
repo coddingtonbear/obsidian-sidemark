@@ -15,7 +15,7 @@ import { confirmAction } from "./confirm-action";
 import { type AnchorTracker, buildEditorExtension, type EditorHost } from "./editor-extension";
 import { buildExportNote, type ResolvedThread } from "./export";
 import { selectedTextHash } from "./hash";
-import { buildThreads, type Comment, type MrsfDocument, suggestionOf } from "./model";
+import { buildThreads, type Comment, type MrsfDocument, suggestionOf, type SuggestionResult } from "./model";
 import {
   type AnchorFields,
   finishSuggestion,
@@ -29,7 +29,14 @@ import {
 import { SidemarkSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, parseSettings, settingsEffects, type SidemarkSettings } from "./settings-model";
 import { notePathFor } from "./sidecar-path";
-import { type Draft, isSidebar, type SidemarkSidebar, SidemarkSidebar as SidebarView, VIEW_TYPE_SIDEMARK } from "./sidebar";
+import {
+  type Draft,
+  isSidebar,
+  type SidemarkSidebar,
+  SidemarkSidebar as SidebarView,
+  suggestionFailureMessage,
+  VIEW_TYPE_SIDEMARK,
+} from "./sidebar";
 import { type RenameOutcome, SidecarStore } from "./store";
 import { suggestionEdit } from "./suggestion-edit";
 import { migrateTandemComments } from "./tandem-runner";
@@ -77,6 +84,30 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       editorCallback: (editor, ctx) => {
         if (ctx.file) void this.startDraft(ctx.file, editor, "suggestion");
       },
+    });
+    this.addCommand({
+      id: "accept-suggestion",
+      name: "Accept suggestion at cursor",
+      icon: "check",
+      editorCheckCallback: (checking, editor, ctx) => this.suggestionCommand(checking, editor, ctx.file, "accepted"),
+    });
+    this.addCommand({
+      id: "decline-suggestion",
+      name: "Decline suggestion at cursor",
+      icon: "x",
+      editorCheckCallback: (checking, editor, ctx) => this.suggestionCommand(checking, editor, ctx.file, "declined"),
+    });
+    this.addCommand({
+      id: "next-suggestion",
+      name: "Go to next suggestion",
+      icon: "arrow-down",
+      editorCheckCallback: (checking, editor, ctx) => this.jumpToSuggestion(checking, editor, ctx.file, 1),
+    });
+    this.addCommand({
+      id: "previous-suggestion",
+      name: "Go to previous suggestion",
+      icon: "arrow-up",
+      editorCheckCallback: (checking, editor, ctx) => this.jumpToSuggestion(checking, editor, ctx.file, -1),
     });
     this.addCommand({
       id: "open-sidebar",
@@ -224,6 +255,64 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
 
   showSuggestionsInline(): boolean {
     return this.settings.showSuggestionsInline;
+  }
+
+  decideSuggestion(notePath: string, id: string, result: SuggestionResult): void {
+    const file = this.app.vault.getFileByPath(notePath);
+    if (file) void this.decideSuggestionIn(file, id, result);
+  }
+
+  /** Accepts or declines a suggestion, telling the user why when that isn't possible. */
+  async decideSuggestionIn(file: TFile, id: string, result: SuggestionResult): Promise<boolean> {
+    if (result === "accepted") {
+      const outcome = await this.acceptSuggestion(file, id);
+      if (!outcome.ok) new Notice(suggestionFailureMessage(outcome.reason));
+      return outcome.ok;
+    }
+    const behavior = this.settings.resolveBehavior;
+    if (
+      behavior === "remove" &&
+      this.settings.confirmDestructiveActions &&
+      !(await confirmAction(this.app, {
+        title: "Decline suggestion?",
+        message: "This permanently removes the suggestion.",
+        confirmLabel: "Decline",
+      }))
+    ) {
+      return false;
+    }
+    let failure: SuggestionFailure | null = null;
+    const saved = await this.updateComments(file, (doc) => {
+      const outcome = finishSuggestion(doc, id, "declined", behavior);
+      if (!outcome.ok) failure = outcome.reason;
+    });
+    if (failure) new Notice(suggestionFailureMessage(failure));
+    return saved && !failure;
+  }
+
+  private suggestionCommand(checking: boolean, editor: Editor, file: TFile | null, result: SuggestionResult): boolean {
+    if (!file) return false;
+    const anchor = this.trackerFor(file.path)?.suggestionAt(editor.posToOffset(editor.getCursor()));
+    if (!anchor) return false;
+    if (!checking) void this.decideSuggestionIn(file, anchor.id, result);
+    return true;
+  }
+
+  /** Selects the next (or previous) open suggestion after the cursor, wrapping around the note. */
+  private jumpToSuggestion(checking: boolean, editor: Editor, file: TFile | null, direction: 1 | -1): boolean {
+    const suggestions = file ? (this.trackerFor(file.path)?.openSuggestions() ?? []) : [];
+    if (suggestions.length === 0) return false;
+    if (checking) return true;
+    const cursor = editor.posToOffset(editor.getCursor(direction === 1 ? "to" : "from"));
+    const target =
+      direction === 1
+        ? (suggestions.find((a) => a.from >= cursor) ?? suggestions[0])
+        : ([...suggestions].reverse().find((a) => a.to <= cursor && a.from < cursor) ?? suggestions[suggestions.length - 1]);
+    const from = editor.offsetToPos(target.from);
+    const to = editor.offsetToPos(target.to);
+    editor.setSelection(from, to);
+    editor.scrollIntoView({ from, to }, true);
+    return true;
   }
 
   /**

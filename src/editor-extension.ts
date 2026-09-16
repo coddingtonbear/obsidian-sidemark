@@ -1,6 +1,16 @@
 import { type Range, StateEffect, type Text } from "@codemirror/state";
-import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType } from "@codemirror/view";
-import { editorInfoField } from "obsidian";
+import {
+  closeHoverTooltips,
+  Decoration,
+  type DecorationSet,
+  EditorView,
+  hoverTooltip,
+  type Tooltip,
+  ViewPlugin,
+  type ViewUpdate,
+  WidgetType,
+} from "@codemirror/view";
+import { editorInfoField, setIcon } from "obsidian";
 import { applyTrackedPosition, PERSIST_MIN_SIMILARITY, resolveComment } from "./anchoring";
 import { buildThreads, type Comment, suggestionOf } from "./model";
 import type { SidecarStore } from "./store";
@@ -25,6 +35,8 @@ export interface EditorHost {
   threadAtCursor(notePath: string, id: string | null): void;
   /** Whether open suggestions are shown in the note as struck-out text followed by their replacement. */
   showSuggestionsInline(): boolean;
+  /** Accepts or declines an open suggestion, e.g. from its hover buttons. */
+  decideSuggestion(notePath: string, id: string, result: "accepted" | "declined"): void;
 }
 
 /** A suggestion's replacement, shown after the passage it would replace. */
@@ -89,7 +101,7 @@ export class AnchorTracker {
   private activeId: string | null = null;
   /** Anchor signature of each comment as last seen in (or written to) the sidecar. */
   private readonly signatures = new Map<string, string>();
-  /** Open edit suggestions (highlighted differently), with the replacement text and the passage it was made for. */
+  /** Edit suggestions (highlighted differently), with the replacement text (null when it can't be acted on) and the passage it was made for. */
   private readonly suggestions = new Map<string, { replacement: string | null; original: string }>();
   /** Comments whose position is only a guess (ambiguous or weak fuzzy match) and must not be saved. */
   private readonly unconfirmed = new Set<string>();
@@ -131,6 +143,21 @@ export class AnchorTracker {
     this.unsubscribe = this.host.store.onChange((change) => {
       if (change.notePath === this.notePath && change.origin !== "tracking") this.requestResync();
     });
+  }
+
+  /** Open suggestions that can still be accepted or declined, in document order. */
+  openSuggestions(): TrackedAnchor[] {
+    return this.anchors.filter((a) => this.suggestions.get(a.id)?.replacement != null);
+  }
+
+  /** The innermost open suggestion whose passage contains `pos` (its end included). */
+  suggestionAt(pos: number): TrackedAnchor | null {
+    let best: TrackedAnchor | null = null;
+    for (const a of this.openSuggestions()) {
+      if (pos < a.from || pos > a.to) continue;
+      if (!best || a.to - a.from < best.to - best.from) best = a;
+    }
+    return best;
   }
 
   /** Rebuilds decorations, e.g. after a display setting changed. */
@@ -244,7 +271,10 @@ export class AnchorTracker {
     for (const root of this.openRoots()) {
       seen.add(root.id);
       if (root.x_suggestion !== undefined) {
-        this.suggestions.set(root.id, { replacement: suggestionOf(root)?.replacement ?? null, original: root.selected_text ?? "" });
+        // Malformed or already decided suggestions keep the highlight but can't be previewed or acted on.
+        const data = suggestionOf(root);
+        const replacement = data && !data.result ? data.replacement : null;
+        this.suggestions.set(root.id, { replacement, original: root.selected_text ?? "" });
       }
       const signature = anchorSignature(root);
       const live = previous.get(root.id);
@@ -387,8 +417,37 @@ export class AnchorTracker {
   }
 }
 
+function suggestionTooltip(host: EditorHost, tracker: AnchorTracker, anchor: TrackedAnchor): Tooltip {
+  return {
+    pos: anchor.from,
+    end: anchor.to,
+    above: true,
+    create: (view) => {
+      const doc = view.dom.ownerDocument;
+      const dom = doc.createElement("div");
+      dom.className = "sm-suggestion-tooltip";
+      const button = (label: string, icon: string, result: "accepted" | "declined"): void => {
+        const el = doc.createElement("button");
+        el.className = "clickable-icon";
+        el.setAttribute("aria-label", label);
+        setIcon(el, icon);
+        el.addEventListener("mousedown", (e) => e.preventDefault());
+        el.addEventListener("click", (e) => {
+          e.preventDefault();
+          view.dispatch({ effects: closeHoverTooltips });
+          if (tracker.notePath) host.decideSuggestion(tracker.notePath, anchor.id, result);
+        });
+        dom.appendChild(el);
+      };
+      button("Accept suggestion", "check", "accepted");
+      button("Decline suggestion", "x", "declined");
+      return { dom };
+    },
+  };
+}
+
 export function buildEditorExtension(host: EditorHost) {
-  return ViewPlugin.define((view) => new AnchorTracker(view, host), {
+  const plugin = ViewPlugin.define((view) => new AnchorTracker(view, host), {
     decorations: (tracker) => tracker.decorations,
     eventHandlers: {
       mousedown(event: MouseEvent) {
@@ -399,4 +458,13 @@ export function buildEditorExtension(host: EditorHost) {
       },
     },
   });
+  const hover = hoverTooltip(
+    (view, pos) => {
+      const tracker = view.plugin(plugin);
+      const anchor = tracker?.suggestionAt(pos);
+      return tracker && anchor ? suggestionTooltip(host, tracker, anchor) : null;
+    },
+    { hoverTime: 300 }
+  );
+  return [plugin, hover];
 }

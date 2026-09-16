@@ -25,7 +25,6 @@ import {
   deleteComment,
   deleteThread,
   editText,
-  finishSuggestion,
   reopenSuggestion,
   retarget,
   setThreadResolved,
@@ -528,25 +527,19 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     if (claimsSuggestion && isOpen && suggestion && !suggestion.result) {
       const accept = actions.createEl("button", { text: "Accept", cls: "mod-cta" });
       accept.disabled = resolution.kind !== "resolved" || resolution.ambiguous;
-      accept.onclick = () => {
-        accept.disabled = true;
-        void this.plugin.acceptSuggestion(file, root.id).then((result) => {
-          if (!result.ok) {
-            new Notice(suggestionFailureMessage(result.reason));
-            accept.disabled = false;
-          }
+      const decline = actions.createEl("button", { text: "Decline" });
+      const decide = (result: "accepted" | "declined", button: HTMLButtonElement): void => {
+        const wasDisabled = accept.disabled;
+        accept.disabled = decline.disabled = true;
+        void this.plugin.decideSuggestionIn(file, root.id, result).then((ok) => {
+          if (ok) return;
+          accept.disabled = wasDisabled;
+          decline.disabled = false;
+          button.focus();
         });
       };
-      const decline = actions.createEl("button", { text: "Decline" });
-      decline.onclick = () =>
-        void (async () => {
-          const behavior = this.plugin.settings.resolveBehavior;
-          if (behavior === "remove" && !(await this.confirmed("Decline suggestion?", "This permanently removes the suggestion.", "Decline"))) return;
-          await this.plugin.updateComments(file, (doc) => {
-            const result = finishSuggestion(doc, root.id, "declined", behavior);
-            if (!result.ok) new Notice(suggestionFailureMessage(result.reason));
-          });
-        })();
+      accept.onclick = () => decide("accepted", accept);
+      decline.onclick = () => decide("declined", decline);
     } else if (!isOpen) {
       const reopen = actions.createEl("button", { text: "Reopen" });
       reopen.onclick = () =>

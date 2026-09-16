@@ -74,6 +74,7 @@ class Harness {
       anchorsChanged: vi.fn(),
       threadAtCursor: this.threadAtCursor,
       showSuggestionsInline: () => harness.inline,
+      decideSuggestion: vi.fn(),
     };
     this.tracker = new AnchorTracker(view as unknown as EditorView, host);
   }
@@ -338,6 +339,20 @@ describe("AnchorTracker", () => {
     await settle();
     h.apply({ changes: { from: TEXT.indexOf("quick"), to: TEXT.indexOf("quick") + 5, insert: "QUICK" } });
     expect(h.decorated()).toEqual([["QUICK brown", "sm-highlight sm-highlight-suggestion"]]);
+  });
+
+  it("finds the open suggestion at a position, skipping plain comments and decided suggestions", async () => {
+    const open = { ...commentOn(TEXT, "quick brown fox", "s"), type: "suggestion", x_suggestion: { replacement: "cat" } };
+    const inner = { ...commentOn(TEXT, "brown", "t"), type: "suggestion", x_suggestion: { replacement: "red" } };
+    const decided = { ...commentOn(TEXT, "Second", "d"), type: "suggestion", x_suggestion: { replacement: "2nd", result: "declined" } };
+    const h = new Harness(TEXT, [open, inner, decided, commentOn(TEXT, "Title", "c")]);
+    await settle();
+    expect(h.tracker.openSuggestions().map((a) => a.id)).toEqual(["s", "t"]);
+    expect(h.tracker.suggestionAt(TEXT.indexOf("quick"))?.id).toBe("s");
+    expect(h.tracker.suggestionAt(TEXT.indexOf("brown") + 2)?.id).toBe("t");
+    expect(h.tracker.suggestionAt(TEXT.indexOf(" jumps"))?.id).toBe("s");
+    expect(h.tracker.suggestionAt(TEXT.indexOf("Title"))).toBeNull();
+    expect(h.tracker.suggestionAt(TEXT.indexOf("Second"))).toBeNull();
   });
 
   it("doesn't preview a decided suggestion", async () => {
