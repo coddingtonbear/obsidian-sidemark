@@ -44,7 +44,7 @@ Sidecars follow MRSF v1.0. Sidemark adds a few extension fields, which MRSF tool
 
 | Field | Meaning |
 | --- | --- |
-| `x_prefix` / `x_suffix` | Up to 20 characters around the quote, used to tell identical quotes apart. |
+| `x_prefix` / `x_suffix` | Up to 20 characters before and after the quote, used to tell identical quotes apart. Together with `selected_text`, these match the `prefix`, `exact` and `suffix` of a [W3C TextQuoteSelector](https://www.w3.org/TR/annotation-model/#text-quote-selector), the quote anchoring Tandem Comments uses. |
 | `x_suggestion` | `{ replacement, result? }` on a root comment with `type: suggestion`. The root's `text` is the optional explanation; `result` is `accepted` or `declined` once decided. |
 | `x_tandem_id` | The original ID of a comment converted from Tandem Comments. |
 
