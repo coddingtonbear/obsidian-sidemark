@@ -19,18 +19,19 @@ Select text and add a comment or suggest an edit. The passage is highlighted in 
 
 Most ways of commenting on Obsidian notes put the comments _in_ the note: as hidden HTML, as CriticMarkup, or as a block at the end. Sidemark keeps them out of the note entirely, in a sidecar file that follows an [open specification](https://github.com/wictorwilen/MRSF) other tools already read and write. The same comments work with the [Sidemark VS Code extension](https://marketplace.visualstudio.com/items?itemName=wictor.mrsf-vscode), the `mrsf` command-line tool, and the `@mrsf/mcp` server for AI assistants.
 
-| | Where comments live | Note file untouched | Format shared with other tools | Anchored to | Follows edits | Replies | Resolve / reopen | Suggested edits | Follows renames |
-|---|---|---|---|---|---|---|---|---|---|
-| **Sidemark** | `.review.yaml` sidecar | ✅ | ✅ MRSF: VS Code, CLI, MCP server | Text range | ✅ | ✅ | ✅ | ✅ | ✅ |
-| [Tandem Comments](https://github.com/leonpawelzik/obsidian-tandem-comments) | JSON block at the end of the note | ⚠️ text untouched, block appended | ⚠️ plain JSON | Text range | ✅ | ✅ | ✅ | ✅ | n/a |
-| [Redline](https://github.com/nicolasassi/redline) | `.review.md` sidecar | ⚠️ adds `^block` IDs | ⚠️ documented, Redline only | Whole block | ✅ | ❌ | ✅ | ❌ | ✅ |
-| [Document Comments](https://github.com/kylemcd/obsidian-document-comments) | HTML comments in the note | ❌ | ❌ | Text range | n/a | ✅ | ✅ | ❌ | n/a |
-| [Commentator](https://github.com/Fevol/obsidian-criticmarkup) | CriticMarkup in the note | ❌ | ✅ CriticMarkup | Text range | n/a | ✅ | ? | ✅ | n/a |
-| [Track Changes](https://github.com/philphilphil/obsidian-track-changes) | CriticMarkup in the note | ❌ | ✅ CriticMarkup | Text range | n/a | ✅ | ? | ✅ | n/a |
-| [SideNote](https://github.com/mofukuru/SideNote) | Plugin settings (`data.json`) | ✅ | ❌ | Text range | ✅ | ? | ⚠️ | ❌ | ✅ |
-| `%% … %%` or footnotes (built in) | In the note | ❌ | ✅ plain Markdown | Nothing, or a single point | n/a | ❌ | ❌ | ❌ | n/a |
+| | **Sidemark** | [Tandem Comments](https://github.com/leonpawelzik/obsidian-tandem-comments) | [Commentator](https://github.com/Fevol/obsidian-criticmarkup) (CriticMarkup) | [Redline](https://github.com/nicolasassi/redline) | [SideNote](https://github.com/mofukuru/SideNote) |
+|---|---|---|---|---|---|
+| **Where comments live** | `.review.yaml` sidecar | Block at the end of the note | Inline in the note | `.review.md` sidecar | Plugin data (`data.json`) |
+| **Note file untouched** | ✅ | ⚠️ block appended | ❌ | ⚠️ adds `^block` IDs | ✅ |
+| **Format shared with other tools** | ✅ MRSF: VS Code, CLI, MCP | ⚠️ plain JSON | ✅ CriticMarkup | ⚠️ documented, Redline only | ❌ |
+| **Anchored to** | Text range | Text range | Text range | Whole block | Text range |
+| **Follows edits** | ✅ | ✅ | n/a | ✅ | ✅ |
+| **Replies** | ✅ | ✅ | ✅ | ❌ | ? |
+| **Resolve / reopen** | ✅ | ✅ | ? | ✅ | ⚠️ |
+| **Suggested edits** | ✅ | ✅ | ✅ | ❌ | ❌ |
+| **Follows renames** | ✅ | n/a | n/a | ✅ | ✅ |
 
-<sub>Based on each project's documentation as of September 2026; "?" means it isn't documented. "n/a" means the comments are inline, so they move with the text anyway. Corrections are welcome.</sub>
+<sub>Based on each project's documentation as of September 2026; "?" means it isn't documented. "n/a" means the comments are inside the note, so they move with the text anyway. Corrections are welcome.</sub>
 
 > [!NOTE]
 > Sidemark is an unofficial fork of [Leon Pawelzik](https://github.com/leonpawelzik)'s [Tandem Comments](https://github.com/leonpawelzik/obsidian-tandem-comments), and would not have been possible without it. The difference is where comments are stored: Tandem keeps them in a block inside each note, and Sidemark uses [MRSF sidecar files](https://github.com/wictorwilen/MRSF). If you're happy with comments stored inside your notes, use Tandem Comments.
