@@ -89,13 +89,13 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     });
     this.addCommand({
       id: "accept-suggestion",
-      name: "Accept suggestion at cursor",
+      name: "Accept current suggestion",
       icon: "check",
       editorCheckCallback: (checking, editor, ctx) => this.suggestionCommand(checking, editor, ctx.file, "accepted"),
     });
     this.addCommand({
       id: "decline-suggestion",
-      name: "Decline suggestion at cursor",
+      name: "Decline current suggestion",
       icon: "x",
       editorCheckCallback: (checking, editor, ctx) => this.suggestionCommand(checking, editor, ctx.file, "declined"),
     });
@@ -147,7 +147,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     });
     this.addCommand({
       id: "migrate-tandem-comments",
-      name: "Convert Tandem Comments in all notes",
+      name: "Convert tandem-comments blocks in all notes",
       icon: "arrow-right-left",
       callback: () => void this.migrateTandem(),
     });

@@ -161,7 +161,7 @@ function findDomTable(view: EditorView, table: ParsedTable): HTMLTableElement | 
     } catch {
       continue;
     }
-    if (pos >= table.from && pos <= table.to) return el as HTMLTableElement;
+    if (pos >= table.from && pos <= table.to) return el;
   }
   return null;
 }
@@ -170,10 +170,10 @@ function findDomTable(view: EditorView, table: ParsedTable): HTMLTableElement | 
 function domCell(domTable: HTMLTableElement, cell: Cell): HTMLTableCellElement | null {
   if (cell.row === 0) {
     const headerRow = domTable.tHead?.rows[0] ?? domTable.rows[0];
-    return (headerRow?.cells[cell.col] as HTMLTableCellElement) ?? null;
+    return headerRow?.cells[cell.col] ?? null;
   }
   const body = domTable.tBodies[0];
-  return (body?.rows[cell.row - 2]?.cells[cell.col] as HTMLTableCellElement) ?? null;
+  return body?.rows[cell.row - 2]?.cells[cell.col] ?? null;
 }
 
 /** Wraps [start, start+len) of the element's text in <span class="sm-highlight">, across text nodes. */

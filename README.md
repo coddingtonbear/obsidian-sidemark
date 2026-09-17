@@ -59,7 +59,7 @@ If you use Obsidian Sync, turn on syncing of "other file types" so the `.review.
 
 - **Add a comment:** select text, then use *Add comment* from the right-click menu or the command palette. Type in the sidebar and press Enter.
 - **Suggest an edit:** select text, then use *Suggest edit*. Edit the proposed replacement and optionally explain why. Clear the replacement to suggest deleting the text.
-- **Review suggestions from the note:** hover over a suggestion for ✓ (accept) and ✕ (decline) buttons. The commands *Accept suggestion at cursor*, *Decline suggestion at cursor*, *Go to next suggestion* and *Go to previous suggestion* can be bound to hotkeys.
+- **Review suggestions from the note:** hover over a suggestion for ✓ (accept) and ✕ (decline) buttons. The commands *Accept current suggestion*, *Decline current suggestion*, *Go to next suggestion* and *Go to previous suggestion* can be bound to hotkeys.
 - **Compact threads:** the panel shows each thread briefly: author, time, a line of the quoted text and the start of the comment. Selecting a thread (click it, or put the cursor in its passage) expands it to show its replies and the reply box; Esc collapses it. A thread with an unsent reply stays expanded.
 - **Resolve and decide:** each card's actions sit in its top-right corner (shown on hover until the card is selected): ✓ resolves a comment or accepts a suggestion, ✕ declines a suggestion, and ↺ reopens a resolved thread.
 - **Open a thread:** click a highlight to open its thread; click the quote in the sidebar to jump to the passage.

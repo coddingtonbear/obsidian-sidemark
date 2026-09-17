@@ -9,3 +9,5 @@ export const editorInfoField = StateField.define<MockFileInfo>({
   create: () => ({ file: null }),
   update: (value) => value,
 });
+
+export const Platform = { isDesktop: false, isDesktopApp: false, isMobile: false };

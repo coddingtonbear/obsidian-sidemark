@@ -120,9 +120,9 @@ export class SidemarkSettingTab extends PluginSettingTab {
           .onChange((value) => void plugin.updateSettings({ confirmDestructiveActions: value }))
       );
 
-    new Setting(containerEl).setName("Tandem Comments").setHeading();
+    new Setting(containerEl).setName("Migration").setHeading();
     new Setting(containerEl)
-      .setName("Convert Tandem Comments")
+      .setName("Convert tandem-comments blocks")
       .setDesc(
         "Moves the comments and suggestions stored in tandem-comments blocks into Sidemark comment files, " +
           "then removes the blocks from your notes. Notes whose blocks can't be read are left untouched."

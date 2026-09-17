@@ -4,6 +4,8 @@
  * each keep their own name. Resolution order: the manual override, then the
  * operating-system username (desktop only), then a generic fallback.
  */
+import { Platform } from "obsidian";
+
 export const AUTHOR_OVERRIDE_KEY = "sidemark:author-name-override";
 
 /** Used when neither an override nor an OS username is available (e.g. on mobile). */
@@ -14,10 +16,12 @@ declare const require: ((module: string) => unknown) | undefined;
 
 export function detectOsUsername(): string | null {
   try {
-    if (typeof require !== "function") return null;
-    const os = require("os") as { userInfo?: () => { username?: string } };
-    const name = os.userInfo?.().username?.trim();
-    return name ? name : null;
+    if (Platform.isDesktop && Platform.isDesktopApp && typeof require === "function") {
+      const os = require("os") as { userInfo?: () => { username?: string } };
+      const name = os.userInfo?.().username?.trim();
+      return name ? name : null;
+    }
+    return null;
   } catch {
     return null;
   }
