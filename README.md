@@ -126,6 +126,8 @@ npx @mrsf/cli reanchor "Projects/Plan.md"
 
 Anything these tools write shows up in Obsidian immediately.
 
+For Claude Code, open **Settings → Sidemark → Claude Code** and use **Install skill**. It writes a ready-made skill to `~/.claude/skills/sidemark-comments/SKILL.md` that teaches Claude the sidecar format and this plugin's conventions — anchoring, threads, suggestions, and what to leave alone. Desktop only, since the skill is written outside the vault, and it replaces whatever is already at that path.
+
 ## Limitations
 
 - No highlights in Reading view; comments are shown in the sidebar and in the editor (Live Preview and Source mode).

@@ -1,7 +1,8 @@
-import { type App, PluginSettingTab, Setting } from "obsidian";
+import { type App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
 import type SidemarkPlugin from "./main";
 import { DEFAULT_SETTINGS, type SidebarSortOrder, type SubmitShortcut, type TimestampDisplay } from "./settings-model";
 import type { ResolveBehavior } from "./mutations";
+import { exportSkill } from "./skill-export";
 
 export class SidemarkSettingTab extends PluginSettingTab {
   constructor(
@@ -140,5 +141,26 @@ export class SidemarkSettingTab extends PluginSettingTab {
             }
           })
       );
+
+    // Desktop only: the skill is written outside the vault, to the user's home
+    // directory, which mobile Obsidian has no way to reach.
+    if (Platform.isDesktop && Platform.isDesktopApp) {
+      new Setting(containerEl).setName("Claude Code").setHeading();
+      new Setting(containerEl)
+        .setName("Sidemark skill")
+        .setDesc(
+          "Teaches Claude Code to read and write Sidemark comment files. Writes the bundled skill to " +
+            "~/.claude/skills/sidemark-comments/SKILL.md, replacing what's there."
+        )
+        .addButton((button) =>
+          button.setButtonText("Install skill").onClick(() => {
+            try {
+              new Notice("Skill installed: " + exportSkill());
+            } catch (error) {
+              new Notice("Install failed: " + (error instanceof Error ? error.message : String(error)));
+            }
+          })
+        );
+    }
   }
 }
