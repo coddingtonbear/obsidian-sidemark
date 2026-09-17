@@ -4,6 +4,8 @@
 
 # Sidemark for Obsidian
 
+[![Install from the Obsidian community plugin directory](https://img.shields.io/badge/Obsidian-install%20Sidemark-7C3AED?logo=obsidian&logoColor=white)](https://community.obsidian.md/plugins/sidemark)
+
 Comments and edit suggestions for Obsidian notes, stored **next to** each note instead of inside it.
 
 Select text and add a comment or suggest an edit. The passage is highlighted in the editor, and the discussion lives in a sidebar. Everything is saved to a sidecar file, `Your Note.md.review.yaml`, in the [MRSF / Sidemark](https://github.com/wictorwilen/MRSF) format. Your notes stay plain Markdown, and other tools see nothing unusual in them.
@@ -47,11 +49,11 @@ Most ways of commenting on Obsidian notes put the comments _in_ the note: as hid
 - Commands to remove resolved threads, and to export a note's comments to `<Note> – Comments.md` next to it. The export opens in a new tab; exporting again replaces the previous export.
 - **Tandem Comments conversion:** a button in settings (also available as a command) converts every note's `tandem-comments` block into a sidecar.
 
-## Installing (manually, for now)
+## Installing
 
-1. Run `npm install && npm run build`.
-2. Copy `main.js`, `manifest.json` and `styles.css` into `<your vault>/.obsidian/plugins/sidemark/`.
-3. Enable **Sidemark** under *Settings → Community plugins*.
+Sidemark is in the [Obsidian community plugin directory](https://community.obsidian.md/plugins/sidemark): open *Settings → Community plugins → Browse* in Obsidian, search for **Sidemark**, then install and enable it.
+
+To install it by hand instead, download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/coddingtonbear/obsidian-sidemark/releases/latest) into `<your vault>/.obsidian/plugins/sidemark/`, then enable **Sidemark** under *Settings → Community plugins*.
 
 If you use Obsidian Sync, turn on syncing of "other file types" so the `.review.yaml` files are synced.
 
