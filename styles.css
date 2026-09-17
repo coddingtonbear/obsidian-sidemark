@@ -303,8 +303,10 @@
   flex-wrap: wrap;
 }
 
+/* Boxes grow with their text (auto-grow.ts) up to this height, then scroll. */
 .sm-input {
   width: 100%;
+  max-height: 40vh;
   margin-top: 6px;
   resize: vertical;
 }
