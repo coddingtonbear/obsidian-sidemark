@@ -63,7 +63,7 @@ export async function migrateTandemComments(plugin: SidemarkPlugin): Promise<voi
     if ((await vault.cachedRead(file)).includes(MARKER)) candidates.push(file);
   }
   if (candidates.length === 0) {
-    new Notice("No notes contain Tandem Comments.");
+    new Notice("No notes contain tandem-comments blocks.");
     return;
   }
   const count = `${candidates.length} note${candidates.length === 1 ? "" : "s"}`;
