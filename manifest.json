@@ -1,7 +1,7 @@
 {
   "id": "sidemark",
   "name": "Sidemark",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "minAppVersion": "1.8.7",
   "description": "Google Docs-style comments and suggested edits, kept in Sidemark (MRSF) .review.yaml sidecars so your Markdown stays clean.",
   "author": "Adam Coddington",
