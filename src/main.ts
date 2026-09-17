@@ -23,6 +23,7 @@ import {
   type NewEntry,
   openSuggestion,
   removeResolvedThreads,
+  undoAcceptedSuggestion,
   descendantIds,
   type SuggestionFailure,
 } from "./mutations";
@@ -554,11 +555,38 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       return { ok: false, reason: "changed" };
     }
     const edit = suggestionEdit(editor.getValue(), from, to, replacement);
-    editor.transaction({
-      changes: [{ from: editor.offsetToPos(edit.from), to: editor.offsetToPos(edit.to), text: edit.insert }],
-    });
-    editor.setCursor(editor.offsetToPos(edit.from + edit.insert.length));
+    const tracker = this.trackerFor(file.path);
+    if (tracker) {
+      // Dispatched on CodeMirror directly: Obsidian's editor API can't carry the
+      // state effect that makes undo reopen the suggestion.
+      tracker.applyAccept(edit, id, thread);
+    } else {
+      editor.transaction({
+        changes: [{ from: editor.offsetToPos(edit.from), to: editor.offsetToPos(edit.to), text: edit.insert }],
+      });
+      editor.setCursor(editor.offsetToPos(edit.from + edit.insert.length));
+    }
     return { ok: true };
+  }
+
+  /**
+   * Undo put the passage back, so the suggestion is open again. A thread the
+   * accept removed (`resolveBehavior: "remove"`) is restored from the snapshot
+   * taken before it; one decided differently since is left alone.
+   */
+  undoAccept(notePath: string, id: string, thread: Comment[]): void {
+    const file = this.app.vault.getFileByPath(notePath);
+    if (!file) return;
+    void this.updateComments(file, (doc) => undoAcceptedSuggestion(doc, id, thread));
+  }
+
+  /** Redo re-applied the replacement, so record the acceptance again. */
+  redoAccept(notePath: string, id: string): void {
+    const file = this.app.vault.getFileByPath(notePath);
+    if (!file) return;
+    // `finishSuggestion` refuses anything that isn't an open suggestion, so a
+    // thread decided elsewhere in the meantime is left as it is.
+    void this.updateComments(file, (doc) => finishSuggestion(doc, id, "accepted", this.settings.resolveBehavior));
   }
 
   private async removeResolved(file: TFile): Promise<void> {

@@ -148,6 +148,25 @@ export function finishSuggestion(
   return check;
 }
 
+/**
+ * Undoes an acceptance the editor has just undone. `thread` is the suggestion
+ * and its replies as they were immediately before accepting: it is only needed
+ * when the accept removed the thread outright (`resolveBehavior: "remove"`).
+ * A suggestion decided some other way since is left as it is, since undoing
+ * the text change says nothing about that decision.
+ */
+export function undoAcceptedSuggestion(doc: MrsfDocument, rootId: string, thread: Comment[]): void {
+  const comment = findComment(doc, rootId);
+  if (!comment) {
+    const restored = new Map(thread.map((c) => [c.id, c]));
+    doc.comments = doc.comments.filter((c) => !restored.has(c.id));
+    doc.comments.push(...structuredClone(thread));
+    return;
+  }
+  if (suggestionOf(comment)?.result !== "accepted") return;
+  reopenSuggestion(doc, rootId);
+}
+
 /** Undoes an accept/decline decision so the suggestion can be acted on again. */
 export function reopenSuggestion(doc: MrsfDocument, rootId: string): void {
   const comment = findComment(doc, rootId);

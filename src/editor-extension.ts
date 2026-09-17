@@ -1,4 +1,5 @@
-import { type Range, StateEffect, type Text } from "@codemirror/state";
+import { invertedEffects, isolateHistory } from "@codemirror/commands";
+import { type Range, StateEffect, type Text, type Transaction } from "@codemirror/state";
 import {
   closeHoverTooltips,
   Decoration,
@@ -27,6 +28,32 @@ const resyncEffect = StateEffect.define<null>();
 /** Marks a thread's passage as the active one (or none), e.g. when its card is selected in the sidebar. */
 const showThreadEffect = StateEffect.define<string | null>();
 
+/** A suggestion whose accept this transaction applies, with its thread as it was just before. */
+interface AcceptedSuggestion {
+  id: string;
+  thread: Comment[];
+}
+
+/** Rides along with the edit that accepts a suggestion; undo inverts it to `reopenedEffect`. */
+const acceptedEffect = StateEffect.define<AcceptedSuggestion>();
+
+/** What an accept inverts to: emitted on the undo transaction, and inverted back for redo. */
+const reopenedEffect = StateEffect.define<AcceptedSuggestion>();
+
+/**
+ * Teaches CodeMirror's history that accepting a suggestion is undoable: undo
+ * of an accept carries `reopenedEffect`, and because history inverts that
+ * transaction in turn, redo carries `acceptedEffect` again.
+ */
+export const suggestionHistory = invertedEffects.of((tr: Transaction): readonly StateEffect<AcceptedSuggestion>[] => {
+  const inverted: StateEffect<AcceptedSuggestion>[] = [];
+  for (const e of tr.effects) {
+    if (e.is(acceptedEffect)) inverted.push(reopenedEffect.of(e.value));
+    else if (e.is(reopenedEffect)) inverted.push(acceptedEffect.of(e.value));
+  }
+  return inverted;
+});
+
 export interface EditorHost {
   readonly store: SidecarStore;
   openSidebar(focusId?: string): unknown;
@@ -40,6 +67,13 @@ export interface EditorHost {
   showSuggestionsInline(): boolean;
   /** Accepts or declines an open suggestion, e.g. from its hover buttons. */
   decideSuggestion(notePath: string, id: string, result: "accepted" | "declined"): void;
+  /**
+   * The editor undid an accepted suggestion's edit: reopen the suggestion, or
+   * restore `thread` when accepting it removed the thread outright.
+   */
+  undoAccept(notePath: string, id: string, thread: Comment[]): void;
+  /** The editor redid an accepted suggestion's edit: record the outcome again. */
+  redoAccept(notePath: string, id: string): void;
 }
 
 /** A suggestion's replacement, shown after the passage it would replace. */
@@ -195,6 +229,20 @@ export class AnchorTracker {
     this.requestResync();
   }
 
+  /**
+   * Applies an accepted suggestion's replacement. The edit is its own undo step
+   * (nothing typed just before it is reverted along with the accept) and
+   * carries the suggestion, so undo reopens it and redo accepts it again.
+   */
+  applyAccept(edit: { from: number; to: number; insert: string }, id: string, thread: Comment[]): void {
+    this.view.dispatch({
+      changes: { from: edit.from, to: edit.to, insert: edit.insert },
+      selection: { anchor: edit.from + edit.insert.length },
+      effects: acceptedEffect.of({ id, thread }),
+      annotations: isolateHistory.of("full"),
+    });
+  }
+
   /** Follows a rename of the tracked note, keeping the live anchors. */
   noteRenamed(newPath: string): void {
     this.flush();
@@ -251,12 +299,19 @@ export class AnchorTracker {
     }
     if (u.selectionSet || u.docChanged || resync) this.updateActive(u.state.selection.main.head, u.selectionSet);
     for (const tr of u.transactions) {
+      // Only history's own transactions decide a suggestion; the accept itself already recorded its outcome.
+      const undoing = tr.isUserEvent("undo");
+      const redoing = tr.isUserEvent("redo");
       for (const e of tr.effects) {
         // Selected from the sidebar, which already knows; don't announce it back.
         if (e.is(showThreadEffect)) {
           this.activeId = e.value;
           this.activeFromSidebar = e.value !== null;
           this.scheduleTableHighlight();
+        } else if (undoing && e.is(reopenedEffect)) {
+          this.host.undoAccept(this.notePath, e.value.id, e.value.thread);
+        } else if (redoing && e.is(acceptedEffect)) {
+          this.host.redoAccept(this.notePath, e.value.id);
         }
       }
     }
@@ -511,5 +566,5 @@ export function buildEditorExtension(host: EditorHost) {
     },
     { hoverTime: 300 }
   );
-  return [plugin, hover];
+  return [plugin, hover, suggestionHistory];
 }

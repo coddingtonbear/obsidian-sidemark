@@ -1,11 +1,21 @@
 import { parseSidecarContent } from "@mrsf/cli/browser";
-import { EditorState, type StateEffect, type TransactionSpec } from "@codemirror/state";
+import { history, redo, undo } from "@codemirror/commands";
+import { EditorState, type StateEffect, type Transaction, type TransactionSpec } from "@codemirror/state";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { anchorFieldsFor } from "../src/anchoring";
-import { AnchorTracker, type EditorHost } from "../src/editor-extension";
+import { AnchorTracker, type EditorHost, suggestionHistory } from "../src/editor-extension";
 import type { Comment, MrsfDocument } from "../src/model";
-import { addComment, retarget } from "../src/mutations";
+import {
+  addComment,
+  descendantIds,
+  finishSuggestion,
+  reopenSuggestion,
+  type ResolveBehavior,
+  retarget,
+  undoAcceptedSuggestion,
+} from "../src/mutations";
+import { suggestionEdit } from "../src/suggestion-edit";
 import { serializeSidecar } from "../src/sidecar-yaml";
 import { type SidecarIO, SidecarStore } from "../src/store";
 import { editorInfoField, type MockFileInfo } from "./mocks/obsidian";
@@ -52,6 +62,7 @@ class Harness {
   readonly tracker: AnchorTracker;
   readonly threadAtCursor = vi.fn();
   inline = true;
+  resolveBehavior: ResolveBehavior = "keep";
   file: NonNullable<MockFileInfo["file"]>;
 
   constructor(text: string, comments: Comment[], path = NOTE) {
@@ -75,13 +86,23 @@ class Harness {
       threadAtCursor: this.threadAtCursor,
       showSuggestionsInline: () => harness.inline,
       decideSuggestion: vi.fn(),
+      // Mirrors the plugin, which runs the same mutations through the store.
+      undoAccept: (notePath, id, thread) => {
+        void harness.store.update(notePath, (doc) => undoAcceptedSuggestion(doc, id, thread));
+      },
+      redoAccept: (notePath, id) => {
+        void harness.store.update(notePath, (doc) => finishSuggestion(doc, id, "accepted", harness.resolveBehavior));
+      },
     };
     this.tracker = new AnchorTracker(view as unknown as EditorView, host);
   }
 
   private createState(text: string): EditorState {
     const file = this.file;
-    return EditorState.create({ doc: text, extensions: [editorInfoField.init(() => ({ file }))] });
+    return EditorState.create({
+      doc: text,
+      extensions: [editorInfoField.init(() => ({ file })), history(), suggestionHistory],
+    });
   }
 
   text(): string {
@@ -89,8 +110,11 @@ class Harness {
   }
 
   apply(spec: TransactionSpec): void {
-    const startState = this.state;
-    const tr = startState.update(spec);
+    this.dispatch(this.state.update(spec));
+  }
+
+  private dispatch(tr: Transaction): void {
+    const startState = tr.startState;
     this.state = tr.state;
     this.tracker.update({
       startState,
@@ -101,6 +125,36 @@ class Harness {
       selectionSet: tr.selection !== undefined,
       viewportChanged: false,
     } as unknown as ViewUpdate);
+  }
+
+  /**
+   * Accepts a suggestion the way the plugin does: record the outcome, then
+   * apply the replacement through the tracker so it carries the accept.
+   */
+  async acceptSuggestion(id: string): Promise<void> {
+    const text = this.text();
+    const anchor = this.tracker.anchors.find((a) => a.id === id);
+    if (!anchor) throw new Error(`no live anchor for "${id}"`);
+    const state = this.store.peek(NOTE);
+    if (!state) throw new Error("sidecar not loaded");
+    const root = state.doc.comments.find((c) => c.id === id);
+    const replacement = (root?.x_suggestion as { replacement: string } | undefined)?.replacement ?? "";
+    const ids = descendantIds(state.doc, id).add(id);
+    const thread = structuredClone(state.doc.comments.filter((c) => ids.has(c.id)));
+    await this.store.update(NOTE, (doc) => finishSuggestion(doc, id, "accepted", this.resolveBehavior));
+    await settle();
+    this.tracker.applyAccept(suggestionEdit(text, anchor.from, anchor.to, replacement), id, thread);
+    await settle();
+  }
+
+  async undo(): Promise<void> {
+    undo({ state: this.state, dispatch: (tr) => this.dispatch(tr) });
+    await settle();
+  }
+
+  async redo(): Promise<void> {
+    redo({ state: this.state, dispatch: (tr) => this.dispatch(tr) });
+    await settle();
   }
 
   /** Simulates Obsidian loading a different note into the same editor. */
@@ -516,5 +570,88 @@ describe("AnchorTracker", () => {
     });
     await settle();
     expect(h.highlighted()).toEqual(["quick brown", "Second"]);
+  });
+
+  describe("undoing an accepted suggestion", () => {
+    const suggestionOn = (quote: string, replacement: string, id = "s"): Comment => ({
+      ...commentOn(TEXT, quote, id),
+      type: "suggestion",
+      x_suggestion: { replacement },
+    });
+
+    /** The suggestion's recorded outcome, or "gone" when its thread was removed (with the last one, the sidecar itself). */
+    const outcome = (h: Harness, id = "s"): string => {
+      if (!h.io.files.has(`${NOTE}.review.yaml`)) return "gone";
+      const comment = h.sidecar().comments.find((c) => c.id === id);
+      if (!comment) return "gone";
+      return String((comment.x_suggestion as { result?: string } | undefined)?.result ?? "open");
+    };
+
+    it("reopens the suggestion when the edit is undone, and accepts it again on redo", async () => {
+      const h = new Harness(TEXT, [suggestionOn("quick brown", "slow red")]);
+      await settle();
+      await h.acceptSuggestion("s");
+      expect(h.text()).toContain("The slow red fox");
+      expect(outcome(h)).toBe("accepted");
+
+      await h.undo();
+      expect(h.text()).toBe(TEXT);
+      expect(outcome(h)).toBe("open");
+      expect(h.sidecar().comments[0].resolved).toBe(false);
+      // Reopened, so it is tracked and previewed in the note again.
+      expect(h.highlighted()).toEqual(["quick brown"]);
+
+      await h.redo();
+      expect(h.text()).toContain("The slow red fox");
+      expect(outcome(h)).toBe("accepted");
+      expect(h.highlighted()).toEqual([]);
+    });
+
+    it("restores a thread that accepting removed", async () => {
+      const h = new Harness(TEXT, [suggestionOn("quick brown", "slow red"), { ...commentOn(TEXT, "quick brown", "r"), reply_to: "s" }]);
+      h.resolveBehavior = "remove";
+      await settle();
+      await h.acceptSuggestion("s");
+      expect(outcome(h)).toBe("gone");
+
+      await h.undo();
+      expect(h.text()).toBe(TEXT);
+      expect(outcome(h)).toBe("open");
+      // The replies come back with it, not just the root.
+      expect(h.sidecar().comments.map((c) => c.id)).toEqual(["s", "r"]);
+      expect(h.highlighted()).toEqual(["quick brown"]);
+
+      await h.redo();
+      expect(outcome(h)).toBe("gone");
+    });
+
+    it("leaves a suggestion that was decided some other way in the meantime", async () => {
+      const h = new Harness(TEXT, [suggestionOn("quick brown", "slow red")]);
+      await settle();
+      await h.acceptSuggestion("s");
+      // Declined from the sidebar (or by another editor) after the accept.
+      await h.store.update(NOTE, (doc) => {
+        reopenSuggestion(doc, "s");
+        finishSuggestion(doc, "s", "declined", "keep");
+      });
+      await settle();
+
+      await h.undo();
+      expect(h.text()).toBe(TEXT);
+      expect(outcome(h)).toBe("declined");
+    });
+
+    it("undoes the accept on its own, without reverting what was typed just before it", async () => {
+      const h = new Harness(TEXT, [suggestionOn("Second", "2nd")]);
+      await settle();
+      h.insert(0, "Intro\n");
+      await settle();
+      await h.acceptSuggestion("s");
+      expect(h.text()).toContain("2nd line here.");
+
+      await h.undo();
+      expect(h.text()).toBe("Intro\n" + TEXT);
+      expect(outcome(h)).toBe("open");
+    });
   });
 });

@@ -12,6 +12,7 @@ import {
   reopenSuggestion,
   retarget,
   setThreadResolved,
+  undoAcceptedSuggestion,
 } from "../src/mutations";
 
 const ts = "2026-09-16T10:00:00Z";
@@ -160,6 +161,38 @@ describe("suggestions", () => {
     reopenSuggestion(doc, "s");
     expect(doc.comments[0]).toMatchObject({ resolved: false, x_suggestion: { replacement: "slow" } });
     expect(suggestionOf(doc.comments[0])?.result).toBeUndefined();
+  });
+
+  it("reopens an accepted suggestion when its edit is undone", () => {
+    const doc = withSuggestion();
+    const thread = structuredClone(doc.comments);
+    finishSuggestion(doc, "s", "accepted", "keep");
+    undoAcceptedSuggestion(doc, "s", thread);
+    expect(doc.comments[0]).toMatchObject({ resolved: false, x_suggestion: { replacement: "slow" } });
+    expect(doc.comments[1].resolved).toBe(false);
+  });
+
+  it("restores the whole thread when accepting removed it", () => {
+    const doc = withSuggestion();
+    const thread = structuredClone(doc.comments);
+    finishSuggestion(doc, "s", "accepted", "remove");
+    expect(doc.comments).toEqual([]);
+    undoAcceptedSuggestion(doc, "s", thread);
+    expect(doc.comments.map((c) => c.id)).toEqual(["s", "s-r"]);
+    expect(suggestionOf(doc.comments[0])?.result).toBeUndefined();
+    // A snapshot of the restored thread, not the caller's copy, so a later redo can restore it again.
+    expect(doc.comments[0]).not.toBe(thread[0]);
+  });
+
+  it("leaves a suggestion decided some other way since the accept", () => {
+    const doc = withSuggestion();
+    const thread = structuredClone(doc.comments);
+    finishSuggestion(doc, "s", "accepted", "keep");
+    reopenSuggestion(doc, "s");
+    finishSuggestion(doc, "s", "declined", "keep");
+    undoAcceptedSuggestion(doc, "s", thread);
+    expect(suggestionOf(doc.comments[0])?.result).toBe("declined");
+    expect(doc.comments[0].resolved).toBe(true);
   });
 
   it("rejects malformed suggestion data", () => {
