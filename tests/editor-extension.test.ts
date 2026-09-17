@@ -120,6 +120,19 @@ class Harness {
     } as unknown as ViewUpdate);
   }
 
+  /**
+   * Simulates another program (a sync, an agent, a hand edit) replacing the
+   * sidecar on disk, and Obsidian's `modify` event reaching the plugin.
+   * `comments: null` deletes the file.
+   */
+  async editSidecarOnDisk(comments: Comment[] | null, path = NOTE): Promise<void> {
+    const sidecarPath = `${path}.review.yaml`;
+    if (comments === null) this.io.files.delete(sidecarPath);
+    else this.io.files.set(sidecarPath, serializeSidecar(null, { mrsf_version: "1.0", document: path, comments }));
+    await this.store.sidecarChanged(path);
+    await settle();
+  }
+
   sidecar(path = NOTE): MrsfDocument {
     return parseSidecarContent(this.io.files.get(`${path}.review.yaml`) ?? "");
   }
@@ -215,6 +228,73 @@ describe("AnchorTracker", () => {
     });
     await settle();
     expect(h.highlighted()).toEqual([]);
+  });
+
+  describe("when the sidecar is changed outside the plugin", () => {
+    it("highlights a comment added on disk", async () => {
+      const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+      await settle();
+      await h.editSidecarOnDisk([commentOn(TEXT, "quick brown", "a"), commentOn(TEXT, "Second", "b")]);
+      expect(h.highlighted()).toEqual(["quick brown", "Second"]);
+    });
+
+    it("stops highlighting a comment resolved or removed on disk", async () => {
+      const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a"), commentOn(TEXT, "Second", "b")]);
+      await settle();
+      await h.editSidecarOnDisk([{ ...commentOn(TEXT, "quick brown", "a"), resolved: true }]);
+      expect(h.highlighted()).toEqual([]);
+    });
+
+    it("clears every highlight when the sidecar is deleted", async () => {
+      const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+      await settle();
+      await h.editSidecarOnDisk(null);
+      expect(h.highlighted()).toEqual([]);
+      expect(h.decorated()).toEqual([]);
+    });
+
+    it("moves a highlight re-targeted on disk", async () => {
+      const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+      await settle();
+      await h.editSidecarOnDisk([commentOn(TEXT, "Second", "a")]);
+      expect(h.highlighted()).toEqual(["Second"]);
+    });
+
+    it("shows a suggestion's new replacement", async () => {
+      const suggestion = { ...commentOn(TEXT, "quick brown", "s"), type: "suggestion", x_suggestion: { replacement: "slow brown" } };
+      const h = new Harness(TEXT, [suggestion]);
+      await settle();
+      await h.editSidecarOnDisk([{ ...suggestion, x_suggestion: { replacement: "quick red" } }]);
+      expect(h.decorated()).toEqual([
+        ["quick brown", "sm-highlight sm-highlight-suggestion sm-suggestion-inline"],
+        ["brown", "sm-suggestion-strike"],
+        ["+red", "widget"],
+      ]);
+    });
+
+    it("keeps live positions of unchanged comments while the note has unsaved edits", async () => {
+      const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+      await settle();
+      h.insert(0, "Intro\n");
+      // Written against the note as saved, before the insertion above.
+      await h.editSidecarOnDisk([commentOn(TEXT, "quick brown", "a"), { ...commentOn(TEXT, "Second", "b"), text: "new" }]);
+      expect(h.highlighted()).toEqual(["quick brown", "Second"]);
+    });
+
+    it("isn't overwritten by positions still waiting to be saved", async () => {
+      const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+      await settle();
+      h.insert(0, "Intro\n");
+      await h.editSidecarOnDisk([{ ...commentOn(TEXT, "quick brown", "a"), text: "edited elsewhere" }, commentOn(TEXT, "Second", "b")]);
+      vi.advanceTimersByTime(1000);
+      await settle();
+      const comments = h.sidecar().comments;
+      expect(comments.map((c) => [c.id, c.text])).toEqual([
+        ["a", "edited elsewhere"],
+        ["b", "note"],
+      ]);
+      expect(comments[0]).toMatchObject({ line: 4, start_column: 4 });
+    });
   });
 
   it("saves pending positions for the previous note when the editor switches notes", async () => {
