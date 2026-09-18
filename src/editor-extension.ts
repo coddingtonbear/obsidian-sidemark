@@ -1,4 +1,4 @@
-import { type Range, StateEffect, type Text } from "@codemirror/state";
+import { EditorSelection, type Range, StateEffect, type Text } from "@codemirror/state";
 import {
   closeHoverTooltips,
   Decoration,
@@ -26,6 +26,37 @@ const resyncEffect = StateEffect.define<null>();
 
 /** Marks a thread's passage as the active one (or none), e.g. when its card is selected in the sidebar. */
 const showThreadEffect = StateEffect.define<string | null>();
+
+/** How long a smooth scroll may take before its position is corrected anyway. */
+const SCROLL_SETTLE_MS = 1000;
+
+/** Input that means the user is scrolling the note themselves. */
+const USER_SCROLL_EVENTS = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+
+/** Space kept above a passage too tall to center. */
+const TALL_PASSAGE_MARGIN = 48;
+
+/**
+ * The scroll position that puts a passage (in scrolled-content coordinates)
+ * in the middle of a viewport `height` tall, or its start near the top when
+ * it's too tall to fit.
+ */
+export function centeredScrollTop(passage: { top: number; bottom: number }, height: number): number {
+  const size = passage.bottom - passage.top;
+  const top = size > height ? passage.top - TALL_PASSAGE_MARGIN : passage.top + size / 2 - height / 2;
+  return Math.max(0, top);
+}
+
+/**
+ * Whether a passage's box lies entirely within the editor's visible area. A
+ * passage with no box (null: it isn't rendered, being far off screen) isn't.
+ */
+export function fullyVisible(
+  passage: { top: number; bottom: number } | null,
+  viewport: { top: number; bottom: number }
+): boolean {
+  return passage !== null && passage.top >= viewport.top && passage.bottom <= viewport.bottom;
+}
 
 export interface EditorHost {
   readonly store: SidecarStore;
@@ -105,6 +136,8 @@ export class AnchorTracker {
   private unsubscribe: (() => void) | null = null;
   private unregister: (() => void) | null = null;
   private destroyed = false;
+  /** Stops waiting on an eased scroll to correct it (see easeToPassage); null when none is pending. */
+  private cancelPendingScroll: (() => void) | null = null;
   /** The thread whose passage contains the cursor, shown with a stronger highlight. */
   private activeId: string | null = null;
   /** The active thread was chosen in the sidebar; it stays until the cursor moves. */
@@ -184,15 +217,84 @@ export class AnchorTracker {
   }
 
   /**
-   * Shows a thread's passage as the active one and scrolls it into view,
-   * without moving the cursor or taking focus. Pass null to clear it.
+   * Shows a thread's passage as the active one, without moving the cursor or
+   * taking focus. Pass null to clear it. A passage that isn't entirely on
+   * screen is scrolled to the middle of the editor; one that is stays put, so
+   * picking a thread whose passage you can already see doesn't move the note.
    */
   showThread(id: string | null): void {
     if (this.destroyed) return;
+    // A newer selection (or none) replaces whatever the last one was scrolling to.
+    this.cancelPendingScroll?.();
     const anchor = id ? this.anchors.find((a) => a.id === id) : undefined;
     const effects: StateEffect<unknown>[] = [showThreadEffect.of(anchor ? anchor.id : null)];
-    if (anchor) effects.push(EditorView.scrollIntoView(anchor.from, { y: "nearest", yMargin: 48 }));
     this.view.dispatch({ effects });
+    if (anchor && !this.passageOnScreen(anchor)) this.easeToPassage(anchor);
+  }
+
+  /** The thread's anchor as it is now; edits replace anchors with moved copies. */
+  private currentAnchor(id: string): TrackedAnchor | undefined {
+    return this.anchors.find((a) => a.id === id);
+  }
+
+  private passageOnScreen(anchor: TrackedAnchor): boolean {
+    const start = this.view.coordsAtPos(anchor.from, 1);
+    const end = this.view.coordsAtPos(anchor.to, -1);
+    const passage = start && end ? { top: start.top, bottom: end.bottom } : null;
+    return fullyVisible(passage, this.view.scrollDOM.getBoundingClientRect());
+  }
+
+  /**
+   * Scrolls a passage to the middle of the editor, easing there rather than
+   * jumping (CodeMirror's own scrolling can't animate). A passage far off
+   * screen isn't laid out yet, so its position is CodeMirror's estimate; once
+   * the scroll settles, anything the estimate got wrong is corrected at once.
+   */
+  private easeToPassage(anchor: TrackedAnchor): void {
+    const { view } = this;
+    const scroller = view.scrollDOM;
+    const frame = scroller.getBoundingClientRect();
+    // Converts viewport coordinates to positions within the scrolled content.
+    const toContent = scroller.scrollTop - frame.top;
+    const start = view.coordsAtPos(anchor.from, 1);
+    const end = view.coordsAtPos(anchor.to, -1);
+    const documentTop = view.documentTop + toContent;
+    const passage = {
+      top: start ? start.top + toContent : documentTop + view.lineBlockAt(anchor.from).top,
+      bottom: end ? end.bottom + toContent : documentTop + view.lineBlockAt(anchor.to).bottom,
+    };
+    // The note may be in a pop-out window, whose timers and media queries are its own.
+    const win = scroller.ownerDocument.defaultView ?? window;
+    const reduceMotion = win.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const settle = (): void => {
+      // The note may have been edited while scrolling; correct to where the passage is now, if it still exists.
+      const current = this.currentAnchor(anchor.id);
+      if (this.destroyed || !current || this.passageOnScreen(current)) return;
+      // With the head at the passage's start, a passage taller than the editor shows its beginning.
+      view.dispatch({ effects: EditorView.scrollIntoView(EditorSelection.range(current.to, current.from), { y: "center" }) });
+    };
+    if (reduceMotion) {
+      scroller.scrollTo({ top: centeredScrollTop(passage, frame.height) });
+      settle();
+      return;
+    }
+    // Only the end of this scroll corrects it. Scrolling by hand in the meantime,
+    // or selecting another thread (showThread), gives it up.
+    const stop = (): void => {
+      win.clearTimeout(timeout);
+      scroller.removeEventListener("scrollend", done);
+      for (const type of USER_SCROLL_EVENTS) scroller.removeEventListener(type, stop);
+      if (this.cancelPendingScroll === stop) this.cancelPendingScroll = null;
+    };
+    const done = (): void => {
+      stop();
+      settle();
+    };
+    const timeout = win.setTimeout(done, SCROLL_SETTLE_MS);
+    scroller.addEventListener("scrollend", done);
+    for (const type of USER_SCROLL_EVENTS) scroller.addEventListener(type, stop);
+    this.cancelPendingScroll = stop;
+    scroller.scrollTo({ top: centeredScrollTop(passage, frame.height), behavior: "smooth" });
   }
 
   /** Rebuilds decorations, e.g. after a display setting changed. */
@@ -216,6 +318,7 @@ export class AnchorTracker {
   destroy(): void {
     this.flush();
     this.destroyed = true;
+    this.cancelPendingScroll?.();
     this.unsubscribe?.();
     this.unregister?.();
   }

@@ -4,7 +4,7 @@ import type { EditorView, ViewUpdate } from "@codemirror/view";
 import type { Editor } from "obsidian";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { anchorFieldsFor } from "../src/anchoring";
-import { AnchorTracker, type EditorHost, trackerOnNote } from "../src/editor-extension";
+import { AnchorTracker, centeredScrollTop, type EditorHost, fullyVisible, trackerOnNote } from "../src/editor-extension";
 import type { Comment, MrsfDocument } from "../src/model";
 import { addComment, retarget } from "../src/mutations";
 import { serializeSidecar } from "../src/sidecar-yaml";
@@ -46,6 +46,50 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 50; i++) await Promise.resolve();
 }
 
+/** A 100px-tall editor scroller that records how it was asked to scroll. */
+class FakeScroller {
+  scrollTop = 0;
+  reduceMotion = false;
+  readonly scrolls: ScrollToOptions[] = [];
+  private readonly listeners = new Map<string, Set<() => void>>();
+  readonly ownerDocument = {
+    defaultView: {
+      matchMedia: () => ({ matches: this.reduceMotion }),
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
+    },
+  };
+  getBoundingClientRect() {
+    return { top: 0, bottom: 100, height: 100 };
+  }
+  scrollTo(options: ScrollToOptions): void {
+    this.scrolls.push(options);
+  }
+  addEventListener(type: string, listener: () => void): void {
+    const set = this.listeners.get(type) ?? new Set();
+    set.add(listener);
+    this.listeners.set(type, set);
+  }
+  removeEventListener(type: string, listener: () => void): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+  private fire(type: string): void {
+    for (const listener of [...(this.listeners.get(type) ?? [])]) listener();
+  }
+  /** The smooth scroll finished. */
+  end(): void {
+    this.fire("scrollend");
+  }
+  /** The user turned the mouse wheel over the note. */
+  wheel(): void {
+    this.fire("wheel");
+  }
+  /** How many listeners are still attached, of any kind. */
+  get listening(): number {
+    return [...this.listeners.values()].reduce((sum, set) => sum + set.size, 0);
+  }
+}
+
 class Harness {
   state: EditorState;
   readonly io = new MemoryIO();
@@ -53,6 +97,10 @@ class Harness {
   readonly tracker: AnchorTracker;
   readonly threadAtCursor = vi.fn();
   inline = true;
+  /** Whether every passage is entirely inside the editor's visible area. */
+  onScreen = true;
+  readonly dispatched: TransactionSpec[] = [];
+  readonly scroller = new FakeScroller();
   file: NonNullable<MockFileInfo["file"]>;
 
   constructor(
@@ -70,7 +118,19 @@ class Harness {
         return harness.state;
       },
       requestMeasure: vi.fn(),
-      dispatch: (spec: TransactionSpec) => this.apply(spec),
+      dispatch: (spec: TransactionSpec) => {
+        harness.dispatched.push(spec);
+        this.apply(spec);
+      },
+      // Every passage is either inside a 0–100px editor or not rendered at all.
+      coordsAtPos: () => (harness.onScreen ? { top: 10, bottom: 20, left: 0, right: 0 } : null),
+      scrollDOM: this.scroller,
+      documentTop: 0,
+      // Unrendered lines are estimated at 20px each.
+      lineBlockAt: (pos: number) => {
+        const line = harness.state.doc.lineAt(pos).number - 1;
+        return { top: line * 20, bottom: line * 20 + 20 };
+      },
     };
     const harness = this;
     const host: EditorHost = {
@@ -422,6 +482,87 @@ describe("AnchorTracker", () => {
     expect(h.decorated().some(([, cls]) => cls.includes("active"))).toBe(false);
   });
 
+  it("leaves the note where it is when a thread's passage is already on screen", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+    await settle();
+    h.tracker.showThread("a");
+    expect(h.scroller.scrolls).toEqual([]);
+  });
+
+  it("eases an off-screen passage to the middle, then corrects the estimate once the scroll ends", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "Second", "b")]);
+    await settle();
+    h.onScreen = false;
+    h.tracker.showThread("b");
+    // "Second" is on line 4, estimated at 60–80px: centered in 100px, that's 20.
+    expect(h.scroller.scrolls).toEqual([{ top: 20, behavior: "smooth" }]);
+    const before = h.dispatched.length;
+    // Still off screen when the scroll settles: CodeMirror scrolls it into place once.
+    h.scroller.end();
+    expect(h.dispatched.length).toBe(before + 1);
+    expect(h.scroller.listening).toBe(0);
+    // A later scroll by the user isn't corrected.
+    h.scroller.end();
+    expect(h.dispatched.length).toBe(before + 1);
+  });
+
+  it("doesn't correct an eased scroll that landed on the passage", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "Second", "b")]);
+    await settle();
+    h.onScreen = false;
+    h.tracker.showThread("b");
+    const before = h.dispatched.length;
+    h.onScreen = true;
+    h.scroller.end();
+    expect(h.dispatched.length).toBe(before);
+  });
+
+  it("gives up correcting a scroll once the user scrolls or picks another thread", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a"), commentOn(TEXT, "Second", "b")]);
+    await settle();
+    h.onScreen = false;
+    h.tracker.showThread("b");
+    let before = h.dispatched.length;
+    h.scroller.wheel();
+    h.scroller.end();
+    expect(h.dispatched.length).toBe(before);
+    expect(h.scroller.listening).toBe(0);
+    // A newer selection replaces the pending one: only its scroll is corrected.
+    h.tracker.showThread("b");
+    h.tracker.showThread("a");
+    before = h.dispatched.length;
+    h.scroller.end();
+    expect(h.dispatched.length).toBe(before + 1);
+    expect(h.scroller.listening).toBe(0);
+  });
+
+  it("corrects to where the passage is after an edit during the scroll, or not at all if it's gone", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "Second", "b")]);
+    await settle();
+    h.onScreen = false;
+    h.tracker.showThread("b");
+    h.insert(0, "Inserted line\n");
+    let before = h.dispatched.length;
+    h.scroller.end();
+    expect(h.dispatched.length).toBe(before + 1);
+    h.tracker.showThread("b");
+    h.apply({ changes: { from: 0, to: h.text().length, insert: "" } });
+    await settle();
+    before = h.dispatched.length;
+    h.scroller.end();
+    expect(h.dispatched.length).toBe(before);
+  });
+
+  it("jumps instead of easing when reduced motion is asked for", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "Second", "b")]);
+    await settle();
+    h.onScreen = false;
+    h.scroller.reduceMotion = true;
+    h.tracker.showThread("b");
+    expect(h.scroller.scrolls).toEqual([{ top: 20 }]);
+    expect(h.scroller.listening).toBe(0);
+  });
+
   it("marks suggestion highlights differently", async () => {
     const suggestion = { ...commentOn(TEXT, "Second", "s"), type: "suggestion", x_suggestion: { replacement: "2nd" } };
     const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a"), suggestion]);
@@ -557,5 +698,37 @@ describe("AnchorTracker", () => {
       expect(trackerOnNote(trackers, NOTE, other.editor as Editor)).toBe(left.tracker);
       expect(trackerOnNote(trackers, "Missing.md", left.editor as Editor)).toBeUndefined();
     });
+  });
+});
+
+describe("fullyVisible", () => {
+  const viewport = { top: 100, bottom: 500 };
+
+  it("accepts a passage inside the viewport, edges included", () => {
+    expect(fullyVisible({ top: 100, bottom: 500 }, viewport)).toBe(true);
+    expect(fullyVisible({ top: 200, bottom: 220 }, viewport)).toBe(true);
+  });
+
+  it("rejects a passage cut off at the top or the bottom", () => {
+    expect(fullyVisible({ top: 90, bottom: 120 }, viewport)).toBe(false);
+    expect(fullyVisible({ top: 480, bottom: 520 }, viewport)).toBe(false);
+  });
+
+  it("rejects a passage that isn't rendered", () => {
+    expect(fullyVisible(null, viewport)).toBe(false);
+  });
+});
+
+describe("centeredScrollTop", () => {
+  it("puts a passage's middle at the viewport's middle", () => {
+    expect(centeredScrollTop({ top: 1000, bottom: 1020 }, 400)).toBe(810);
+  });
+
+  it("shows the start of a passage taller than the viewport, with some room above it", () => {
+    expect(centeredScrollTop({ top: 1000, bottom: 1600 }, 400)).toBe(952);
+  });
+
+  it("never scrolls above the top of the note", () => {
+    expect(centeredScrollTop({ top: 10, bottom: 30 }, 400)).toBe(0);
   });
 });
