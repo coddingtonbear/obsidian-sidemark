@@ -10,7 +10,7 @@ import {
   type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
-import { editorInfoField, setIcon } from "obsidian";
+import { type Editor, editorInfoField, setIcon } from "obsidian";
 import { applyTrackedPosition, PERSIST_MIN_SIMILARITY, resolveComment } from "./anchoring";
 import { buildThreads, type Comment, isResolved, suggestionOf } from "./model";
 import type { SidecarStore } from "./store";
@@ -125,6 +125,11 @@ export class AnchorTracker {
     this.unregister = host.registerTracker(this);
     this.attach(this.currentPath(), view.state.doc.toString());
     this.scheduleTableHighlight();
+  }
+
+  /** The Obsidian editor wrapping this tracker's CodeMirror instance, when there is one. */
+  get editor(): Editor | undefined {
+    return this.view.state.field(editorInfoField, false)?.editor;
   }
 
   private currentPath(): string | null {
@@ -460,6 +465,23 @@ export class AnchorTracker {
       },
     });
   }
+}
+
+/**
+ * The tracker to consult about a note's anchors. With the note open in several
+ * panes there is a tracker per pane, so when the caller is working in a
+ * particular editor it gets that editor's tracker, the one whose positions its
+ * offsets are measured against. Otherwise, or when that editor has no tracker,
+ * any tracker on the note will do.
+ */
+export function trackerOnNote(trackers: Iterable<AnchorTracker>, notePath: string, editor?: Editor): AnchorTracker | undefined {
+  let first: AnchorTracker | undefined;
+  for (const tracker of trackers) {
+    if (tracker.notePath !== notePath) continue;
+    if (editor && tracker.editor === editor) return tracker;
+    first ??= tracker;
+  }
+  return first;
 }
 
 function suggestionTooltip(host: EditorHost, tracker: AnchorTracker, anchor: TrackedAnchor): Tooltip {
