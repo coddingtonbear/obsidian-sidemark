@@ -15,11 +15,29 @@
   overflow-y: auto;
 }
 
+/* The header stays in view as the threads scroll, so its unread badge does too. */
 .sm-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 10px;
+  padding: 4px 0;
+  background-color: var(--background-secondary);
+}
+
+/* A pinned header stops at the list's padding; this covers the strip above
+   it, so threads don't show through as they scroll past. */
+.sm-header::before {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  height: 16px;
+  background-color: inherit;
 }
 
 .sm-title {
@@ -537,9 +555,47 @@
 /* ── Unread ─────────────────────────────────────────────────
    A closed thread with comments you haven't read gets a dot and a bold
    author; an open one marks where its new replies begin. */
-.sm-new-count {
-  font-weight: 400;
-  color: var(--interactive-accent);
+.sm-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The count of unread threads; clicking it scrolls to the next one. */
+.sm-header .sm-new-badge {
+  height: auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  color: var(--text-on-accent);
+  background-color: var(--interactive-accent);
+  box-shadow: none;
+  white-space: nowrap;
+}
+
+.sm-header .sm-new-badge:hover {
+  background-color: var(--interactive-accent-hover);
+}
+
+.sm-card.sm-flash {
+  animation: sm-flash 1.2s ease-out;
+}
+
+@keyframes sm-flash {
+  from {
+    box-shadow: 0 0 0 3px var(--interactive-accent);
+  }
+  to {
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sm-card.sm-flash {
+    animation: none;
+  }
 }
 
 .sm-card.sm-unread:not(.sm-expanded) .sm-card-header > .sm-author {

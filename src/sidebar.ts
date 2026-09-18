@@ -97,6 +97,8 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
    * closed, so you can still see where you left off.
    */
   private opened: { id: string; newIds: Set<string> } | null = null;
+  /** The unread thread the header's badge last scrolled to. */
+  private lastUnreadShown: string | null = null;
   /** The note and threads of the last render, for marking a thread read when it's opened. */
   private renderedFile: TFile | null = null;
   private renderedThreads = new Map<string, Thread>();
@@ -286,8 +288,17 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     const unreadCount = [...unread.values()].filter((ids) => ids.size > 0).length;
 
     const header = container.createDiv({ cls: "sm-header" });
-    const title = header.createSpan({ text: "Comments", cls: "sm-title" });
-    if (unreadCount > 0) title.createSpan({ text: ` · ${unreadCount} new`, cls: "sm-new-count" });
+    const title = header.createDiv({ cls: "sm-header-title" });
+    title.createSpan({ text: "Comments", cls: "sm-title" });
+    if (unreadCount > 0) {
+      const badge = title.createEl("button", {
+        text: `${unreadCount} new`,
+        cls: "sm-new-badge",
+        attr: { "aria-label": `${unreadCount} ${unreadCount === 1 ? "thread has" : "threads have"} unread comments` },
+      });
+      setTooltip(badge, "Scroll to the next thread with unread comments");
+      badge.onclick = () => this.scrollToNextUnread();
+    }
     const trigger = header.createEl("button", {
       cls: "sm-entry-menu-trigger clickable-icon",
       attr: { "aria-label": "More options for comments", "aria-haspopup": "menu", "aria-expanded": "false" },
@@ -1052,6 +1063,33 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       const formatted = formatSidebarTimestamp(timestamp, this.plugin.settings.timestampDisplay);
       if (formatted !== null) element.setText(formatted);
     }
+  }
+
+  /**
+   * Scrolls to the next unread thread that isn't already in full view and
+   * flashes it, without opening it (which would mark it read). "Next" counts
+   * on from the one last scrolled to, starting over at the top; when every
+   * unread thread is in view, it flashes the next one instead.
+   */
+  private scrollToNextUnread(): void {
+    const cards = Array.from(this.contentEl.querySelectorAll<HTMLElement>(".sm-card.sm-unread"));
+    if (cards.length === 0) return;
+    const last = cards.findIndex((card) => card.dataset.smId === this.lastUnreadShown);
+    const order = [...cards.slice(last + 1), ...cards.slice(0, last + 1)];
+    const frame = this.contentEl.getBoundingClientRect();
+    // The pinned header covers the top of the list.
+    const top = frame.top + (this.contentEl.querySelector<HTMLElement>(".sm-header")?.offsetHeight ?? 0);
+    const inView = (card: HTMLElement): boolean => {
+      const box = card.getBoundingClientRect();
+      return box.top >= top && box.bottom <= frame.bottom;
+    };
+    const card = order.find((c) => !inView(c)) ?? order[0];
+    this.lastUnreadShown = card.dataset.smId ?? null;
+    card.scrollIntoView({ block: "center", behavior: "smooth" });
+    card.removeClass("sm-flash");
+    // Restart the animation even if this card was flashed a moment ago.
+    void card.offsetWidth;
+    card.addClass("sm-flash");
   }
 
   /** Marks a thread unread and closes it, so opening it doesn't mark it read again straight away. */
