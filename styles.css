@@ -329,6 +329,23 @@
   min-height: 64px;
 }
 
+/* Comments, the passages they quote, suggested changes and the boxes
+   they're written in use the note's text font (Appearance → Text font)
+   rather than the interface font, in compact cards too. */
+.sm-text,
+.sm-quote,
+.sm-suggestion-diff,
+.sm-input {
+  font-family: var(--font-text);
+}
+
+/* Obsidian gives code its monospace font only inside .markdown-rendered,
+   which a comment's rendered text isn't. */
+.sm-text code,
+.sm-text pre {
+  font-family: var(--font-monospace);
+}
+
 /* An open thread is read and written at the note's own size rather than
    Obsidian's smaller interface sizes (15px for the sidebar, 13px for text
    boxes), so it follows the Appearance font size slider as the note does.
