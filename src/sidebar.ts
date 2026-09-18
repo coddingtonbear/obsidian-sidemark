@@ -15,6 +15,7 @@ import {
 import { resolveAuthorColor } from "./author-color";
 import { autoGrow } from "./auto-grow";
 import { confirmAction } from "./confirm-action";
+import { draftSlot, threadStart } from "./draft-slot";
 import { formatThread, formatTs, type ResolvedThread } from "./export";
 import type SidemarkPlugin from "./main";
 import { type Comment, isResolved, suggestionOf, threadActivity } from "./model";
@@ -40,6 +41,8 @@ export const VIEW_TYPE_SIDEMARK = "sidemark-sidebar";
 export interface Draft {
   filePath: string;
   anchor: AnchorFields;
+  /** Offset in the note where the selected passage starts, for placing the draft's card. */
+  from: number;
   kind: "comment" | "suggestion";
 }
 
@@ -227,8 +230,8 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     });
     toggle.onclick = () => this.toggleResolved();
 
-    if (this.draft && this.draft.filePath === file.path) this.renderDraft(container, file, this.draft);
-    else this.draft = null;
+    if (this.draft?.filePath !== file.path) this.draft = null;
+    const draft = this.draft;
 
     const open = this.sorted(threads.filter((t) => !isResolved(t.thread.root) && t.resolution.kind === "resolved"));
     const orphans = this.sorted(threads.filter((t) => !isResolved(t.thread.root) && t.resolution.kind === "orphaned"));
@@ -244,7 +247,13 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       return;
     }
 
-    for (const t of open) this.renderThread(container, file, t);
+    // The draft goes where its comment will show once saved.
+    const slot = draft ? draftSlot(this.plugin.settings.sidebarSortOrder, draft.from, open) : -1;
+    open.forEach((t, index) => {
+      if (draft && index === slot) this.renderDraft(container, file, draft);
+      this.renderThread(container, file, t);
+    });
+    if (draft && slot === open.length) this.renderDraft(container, file, draft);
     if (orphans.length) {
       container.createDiv({ text: "Orphaned — passage not found", cls: "sm-section" });
       for (const t of orphans) this.renderThread(container, file, t);
@@ -259,8 +268,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
   private sorted(items: ResolvedThread[]): ResolvedThread[] {
     const order = this.plugin.settings.sidebarSortOrder;
     if (order === "document") {
-      const start = (t: ResolvedThread) => (t.resolution.kind === "resolved" ? t.resolution.from : Number.MAX_SAFE_INTEGER);
-      return [...items].sort((a, b) => start(a) - start(b));
+      return [...items].sort((a, b) => threadStart(a) - threadStart(b));
     }
     const direction = order === "newest" ? -1 : 1;
     return [...items].sort((a, b) => direction * (threadActivity(a.thread) - threadActivity(b.thread)));
