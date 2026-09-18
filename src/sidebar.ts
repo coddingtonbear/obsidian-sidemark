@@ -581,6 +581,10 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     }
     const controls = header.createDiv({ cls: "sm-entry-controls" });
     const menuItems: { title: string; icon: string; warning?: boolean; run: () => void }[] = [copyItem];
+    // Also fixes a comment made on the wrong passage, not only a lost anchor (the bottom button).
+    if (isOpen) {
+      menuItems.push({ title: "Re-anchor to selection", icon: "crosshair", run: () => void this.reanchorFromSelection(file, root.id) });
+    }
     if (claimsSuggestion) {
       if (isOpen && suggestion && !suggestion.result) {
         // Both buttons stay disabled while either decision is being saved.
