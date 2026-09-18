@@ -86,6 +86,11 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
   private showResolved: boolean;
   /** The thread shown as selected; it stays selected across re-renders. */
   private focusedId: string | null = null;
+  /**
+   * The thread being re-anchored: it stays selected while the user picks its new
+   * passage in the note, instead of following the editor's cursor.
+   */
+  private reanchoringId: string | null = null;
   /** A thread to scroll into view on the next render (set when its card doesn't exist yet). */
   private pendingScrollId: string | null = null;
   private renderQueued = false;
@@ -112,7 +117,12 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
   }
 
   async onOpen(): Promise<void> {
-    this.registerEvent(this.app.workspace.on("file-open", () => this.requestRender(true)));
+    this.registerEvent(
+      this.app.workspace.on("file-open", () => {
+        this.reanchoringId = null;
+        this.requestRender(true);
+      })
+    );
     this.register(
       this.plugin.store.onChange((change) => {
         if (change.notePath === this.app.workspace.getActiveFile()?.path) this.requestRender(false);
@@ -121,6 +131,10 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     this.registerInterval(window.setInterval(() => this.refreshTimestamps(), 60_000));
     this.registerDomEvent(this.contentEl, "keydown", (e) => {
       if (e.key !== "Escape" || (e.target instanceof Element && e.target.closest("textarea, input"))) return;
+      if (this.reanchoringId !== null) {
+        this.setReanchoring(null);
+        return;
+      }
       this.clearFocus();
       const file = this.app.workspace.getActiveFile();
       if (file) this.plugin.showThreadInEditor(file, null);
@@ -138,8 +152,18 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     this.requestRender(true);
   }
 
+  /** The editor's cursor moved into a thread's passage (`id`) or out of all of them (null). */
+  followCursor(id: string | null): void {
+    // The user is selecting the re-anchored thread's new passage; keep it selected.
+    if (this.reanchoringId !== null) return;
+    if (id) this.focusThread(id);
+    else this.clearFocus();
+  }
+
   /** Marks a thread as selected, scrolling to it unless `scroll` is false. */
   focusThread(id: string, scroll = true): void {
+    // Selecting another thread on purpose ends re-anchoring.
+    if (this.reanchoringId !== null && id !== this.reanchoringId) this.setReanchoring(null);
     this.focusedId = id;
     const card = this.applyFocus();
     if (!scroll) return;
@@ -152,6 +176,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
   }
 
   clearFocus(): void {
+    this.setReanchoring(null);
     if (this.focusedId === null) return;
     this.focusedId = null;
     this.applyFocus();
@@ -236,6 +261,10 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     const open = this.sorted(threads.filter((t) => !isResolved(t.thread.root) && t.resolution.kind === "resolved"));
     const orphans = this.sorted(threads.filter((t) => !isResolved(t.thread.root) && t.resolution.kind === "orphaned"));
     const done = this.sorted(threads.filter((t) => isResolved(t.thread.root)));
+    // A thread that was resolved or deleted meanwhile can't be re-anchored any more.
+    if (this.reanchoringId !== null && ![...open, ...orphans].some((t) => t.thread.root.id === this.reanchoringId)) {
+      this.reanchoringId = null;
+    }
 
     if (!open.length && !orphans.length && !(this.showResolved && done.length) && !this.draft) {
       container.createDiv({
@@ -515,6 +544,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     if (claimsSuggestion) cls.push("sm-suggestion-card");
     if (resolution.kind === "resolved" && resolution.ambiguous) cls.push("sm-ambiguous");
     if (root.id === this.focusedId) cls.push("sm-focused", "sm-expanded");
+    if (root.id === this.reanchoringId) cls.push("sm-reanchoring");
     // Unselected cards are compact: CSS hides everything marked sm-full-only unless the card is expanded.
     const card = container.createDiv({ cls: cls.join(" ") });
     card.dataset.smId = root.id;
@@ -589,6 +619,14 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     }
     const controls = header.createDiv({ cls: "sm-entry-controls" });
     const menuItems: { title: string; icon: string; warning?: boolean; run: () => void }[] = [copyItem];
+    // Also fixes a comment made on the wrong passage, not only a lost anchor (the bottom button).
+    if (isOpen) {
+      menuItems.push({
+        title: "Re-anchor…",
+        icon: "crosshair",
+        run: () => this.startReanchoring(file, root.id),
+      });
+    }
     if (claimsSuggestion) {
       if (isOpen && suggestion && !suggestion.result) {
         // Both buttons stay disabled while either decision is being saved.
@@ -680,9 +718,23 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
 
     // The only bottom action repairs a thread's anchor; decisions live in the header.
     if (isOpen && (resolution.kind === "orphaned" || resolution.ambiguous || (claimsSuggestion && resolution.fuzzy))) {
-      const actions = details.createDiv({ cls: "sm-actions" });
-      const reanchor = actions.createEl("button", { text: "Re-anchor to selection" });
-      reanchor.onclick = () => void this.reanchorFromSelection(file, root.id);
+      const actions = details.createDiv({ cls: "sm-actions sm-repair-actions" });
+      const reanchor = actions.createEl("button", { text: "Re-anchor…" });
+      reanchor.onclick = () => this.startReanchoring(file, root.id);
+    }
+
+    if (isOpen) {
+      // Shown while the thread is being re-anchored (see .sm-reanchoring in styles.css).
+      const panel = details.createDiv({ cls: "sm-reanchor-panel" });
+      panel.createDiv({ text: "Select the new passage in the note.", cls: "sm-field-hint" });
+      const panelActions = panel.createDiv({ cls: "sm-actions" });
+      const confirm = panelActions.createEl("button", { text: "Re-anchor to selection", cls: "mod-cta" });
+      const cancelReanchor = panelActions.createEl("button", { text: "Cancel" });
+      confirm.onclick = () =>
+        void this.reanchorFromSelection(file, root.id).then((moved) => {
+          if (moved) this.setReanchoring(null);
+        });
+      cancelReanchor.onclick = () => this.setReanchoring(null);
     }
 
     if (isOpen) {
@@ -919,13 +971,30 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     }
   }
 
-  private async reanchorFromSelection(file: TFile, id: string): Promise<void> {
+  /** Selects a thread and asks for its new passage (the panel in renderThread). */
+  private startReanchoring(file: TFile, id: string): void {
+    this.focusThread(id, false);
+    this.plugin.showThreadInEditor(file, id);
+    this.setReanchoring(id);
+  }
+
+  /** Starts re-anchoring a thread (or stops, with null), updating the cards in place. */
+  private setReanchoring(id: string | null): void {
+    if (this.reanchoringId === id) return;
+    this.reanchoringId = id;
+    for (const card of Array.from(this.contentEl.querySelectorAll<HTMLElement>(".sm-card[data-sm-id]"))) {
+      card.toggleClass("sm-reanchoring", card.dataset.smId === id);
+    }
+  }
+
+  /** Moves a thread to the passage selected in the note; returns whether it moved. */
+  private async reanchorFromSelection(file: TFile, id: string): Promise<boolean> {
     const anchor = await this.plugin.selectionAnchor(file);
     if (!anchor) {
       new Notice("Select the new passage in the editor first.");
-      return;
+      return false;
     }
-    await this.plugin.updateComments(file, (doc) => retarget(doc, id, anchor));
+    return this.plugin.updateComments(file, (doc) => retarget(doc, id, anchor));
   }
 }
 

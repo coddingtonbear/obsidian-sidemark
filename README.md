@@ -43,7 +43,8 @@ Most ways of commenting on Obsidian notes put the comments _in_ the note: as hid
 - Open suggestions are shown in the note itself: only the words that would change are struck through, with the new words right after them (this can be turned off in settings). The sidebar card, and the preview while you write a suggestion, show the change the same way.
 - Highlights follow the text as you type, including inside tables. Updated positions are saved to the sidecar automatically.
 - **Drift:** when the commented text itself is edited, the sidebar shows what it now reads. MRSF keeps the reviewer's original selection in `selected_text` and the current text in `anchored_text`.
-- **Orphans:** comments whose passage was deleted are listed as orphaned, and "Re-anchor to selection" attaches them to new text.
+- **Orphans:** comments whose passage was deleted are listed as orphaned, and their "Re-anchor…" button attaches them to new text (see Re-anchoring).
+- **Re-anchoring:** to move an open thread to different text (say, you highlighted the wrong passage), choose "Re-anchor…" from the thread's ⋯ menu, select the new text in the note, then click "Re-anchor to selection". The thread stays selected in the sidebar while you pick the text.
 - **Outside edits:** changes to the note or its sidecar made outside Obsidian (sync, git, an AI assistant, the `mrsf` tool) are picked up live.
 - **Renames and deletes:** renaming or moving a note moves its sidecar and updates its `document` field; renaming a folder is handled too. Deleting a note moves its sidecar to the trash with it.
 - Comment text is rendered as Markdown, so `[[wikilinks]]` work and show hover previews.

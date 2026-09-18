@@ -533,6 +533,18 @@
   text-overflow: ellipsis;
 }
 
+/* Re-anchoring: the thread waits for its new passage to be selected in the note. */
+.sm-card:not(.sm-reanchoring) .sm-reanchor-panel,
+.sm-card.sm-reanchoring .sm-repair-actions {
+  display: none;
+}
+
+.sm-reanchor-panel {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--interactive-accent);
+}
+
 /* A reply box shows its buttons only while it's focused or holds text. */
 .sm-reply-box:not(:focus-within) .sm-actions {
   display: none;
