@@ -624,11 +624,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       menuItems.push({
         title: "Re-anchor…",
         icon: "crosshair",
-        run: () => {
-          this.focusThread(root.id, false);
-          this.plugin.showThreadInEditor(file, root.id);
-          this.setReanchoring(root.id);
-        },
+        run: () => this.startReanchoring(file, root.id),
       });
     }
     if (claimsSuggestion) {
@@ -723,8 +719,8 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     // The only bottom action repairs a thread's anchor; decisions live in the header.
     if (isOpen && (resolution.kind === "orphaned" || resolution.ambiguous || (claimsSuggestion && resolution.fuzzy))) {
       const actions = details.createDiv({ cls: "sm-actions sm-repair-actions" });
-      const reanchor = actions.createEl("button", { text: "Re-anchor to selection" });
-      reanchor.onclick = () => void this.reanchorFromSelection(file, root.id);
+      const reanchor = actions.createEl("button", { text: "Re-anchor…" });
+      reanchor.onclick = () => this.startReanchoring(file, root.id);
     }
 
     if (isOpen) {
@@ -973,6 +969,13 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       const formatted = formatSidebarTimestamp(timestamp, this.plugin.settings.timestampDisplay);
       if (formatted !== null) element.setText(formatted);
     }
+  }
+
+  /** Selects a thread and asks for its new passage (the panel in renderThread). */
+  private startReanchoring(file: TFile, id: string): void {
+    this.focusThread(id, false);
+    this.plugin.showThreadInEditor(file, id);
+    this.setReanchoring(id);
   }
 
   /** Starts re-anchoring a thread (or stops, with null), updating the cards in place. */
