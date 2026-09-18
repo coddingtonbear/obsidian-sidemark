@@ -68,7 +68,7 @@ If you use Obsidian Sync, turn on syncing of "other file types" so the `.review.
 - **Resolve and decide:** each card's actions sit in its top-right corner (shown on hover until the card is selected): ✓ resolves a comment or accepts a suggestion, ✕ declines a suggestion, and ↺ reopens a resolved thread.
 - **Open a thread:** click a highlight to open its thread; click the quote in the sidebar to jump to the passage.
 - **Edit your own text:** double-click a comment's text to edit it. The `…` menu copies or deletes a comment.
-- **Undoing an accepted suggestion:** Undo restores the note's text, but the suggestion stays marked accepted. Use *Show resolved*, then the ↺ (Reopen) button on its card, to act on it again.
+- **Undoing an accepted suggestion:** Undo restores the note's text, but the suggestion stays marked accepted. Use *Show resolved threads* in the sidebar's ⋯ menu, then the ↺ (Reopen) button on its card, to act on it again.
 
 ## The file format
 
