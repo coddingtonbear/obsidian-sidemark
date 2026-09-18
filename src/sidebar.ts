@@ -18,7 +18,7 @@ import { confirmAction } from "./confirm-action";
 import { draftSlot, threadStart } from "./draft-slot";
 import { formatThread, formatTs, type ResolvedThread } from "./export";
 import type SidemarkPlugin from "./main";
-import { type Comment, isResolved, suggestionOf, threadActivity } from "./model";
+import { type Comment, isResolved, suggestionOf, type Thread, threadActivity } from "./model";
 import {
   type AnchorFields,
   addComment,
@@ -91,6 +91,15 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
    * passage in the note, instead of following the editor's cursor.
    */
   private reanchoringId: string | null = null;
+  /**
+   * The thread last opened and which of its comments were new when it was:
+   * opening a thread marks it read, but what was new stays marked until it's
+   * closed, so you can still see where you left off.
+   */
+  private opened: { id: string; newIds: Set<string> } | null = null;
+  /** The note and threads of the last render, for marking a thread read when it's opened. */
+  private renderedFile: TFile | null = null;
+  private renderedThreads = new Map<string, Thread>();
   /** A thread to scroll into view on the next render (set when its card doesn't exist yet). */
   private pendingScrollId: string | null = null;
   private renderQueued = false;
@@ -166,6 +175,12 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     if (this.reanchoringId !== null && id !== this.reanchoringId) this.setReanchoring(null);
     this.focusedId = id;
     const card = this.applyFocus();
+    const closed = this.opened !== null && this.opened.id !== id;
+    if (closed) this.opened = null;
+    const thread = this.renderedThreads.get(id);
+    const newlyRead = this.renderedFile !== null && thread !== undefined && this.noteOpened(this.renderedFile, thread);
+    // Redraw the "new" markers: the closed thread's go, the opened one's count drops out of the header.
+    if (closed || newlyRead) this.requestRender(false);
     if (!scroll) return;
     if (card) {
       card.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -180,6 +195,20 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     if (this.focusedId === null) return;
     this.focusedId = null;
     this.applyFocus();
+    if (this.opened !== null) {
+      this.opened = null;
+      this.requestRender(false);
+    }
+  }
+
+  /** Marks an opened thread read, remembering what was new in it; returns whether anything was. */
+  private noteOpened(file: TFile, thread: Thread): boolean {
+    const ids = this.plugin.unreadIn(file, thread);
+    if (ids.size === 0) return false;
+    const kept = this.opened?.id === thread.root.id ? this.opened.newIds : [];
+    this.opened = { id: thread.root.id, newIds: new Set([...kept, ...ids]) };
+    this.plugin.markThreadRead(file, thread);
+    return true;
   }
 
   /** Updates the selected card in place; returns it if it's rendered. */
@@ -247,8 +276,18 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       });
     }
 
+    this.renderedFile = file;
+    this.renderedThreads = new Map(threads.map((t) => [t.thread.root.id, t.thread]));
+    if (this.opened !== null && this.opened.id !== this.focusedId) this.opened = null;
+    // A thread that's open when it gets a new comment has that read too.
+    const focused = this.focusedId !== null ? this.renderedThreads.get(this.focusedId) : undefined;
+    if (focused) this.noteOpened(file, focused);
+    const unread = new Map(threads.map((t) => [t.thread.root.id, this.plugin.unreadIn(file, t.thread)]));
+    const unreadCount = [...unread.values()].filter((ids) => ids.size > 0).length;
+
     const header = container.createDiv({ cls: "sm-header" });
-    header.createSpan({ text: "Comments", cls: "sm-title" });
+    const title = header.createSpan({ text: "Comments", cls: "sm-title" });
+    if (unreadCount > 0) title.createSpan({ text: ` · ${unreadCount} new`, cls: "sm-new-count" });
     const trigger = header.createEl("button", {
       cls: "sm-entry-menu-trigger clickable-icon",
       attr: { "aria-label": "More options for comments", "aria-haspopup": "menu", "aria-expanded": "false" },
@@ -262,6 +301,16 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
             .setIcon("check-check")
             .setChecked(this.showResolved)
             .onClick(() => this.toggleResolved())
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle("Mark all as read")
+            .setIcon("mail-open")
+            .setDisabled(unreadCount === 0)
+            .onClick(() => {
+              for (const t of threads) this.plugin.markThreadRead(file, t.thread);
+              this.requestRender(false);
+            })
         );
       });
 
@@ -286,20 +335,26 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       return;
     }
 
+    const show = (t: ResolvedThread): void => {
+      const id = t.thread.root.id;
+      const stillUnread = unread.get(id) ?? new Set<string>();
+      const newIds = this.opened?.id === id ? new Set([...this.opened.newIds, ...stillUnread]) : stillUnread;
+      this.renderThread(container, file, t, newIds, stillUnread.size > 0);
+    };
     // The draft goes where its comment will show once saved.
     const slot = draft ? draftSlot(this.plugin.settings.sidebarSortOrder, draft.from, open) : -1;
     open.forEach((t, index) => {
       if (draft && index === slot) this.renderDraft(container, file, draft);
-      this.renderThread(container, file, t);
+      show(t);
     });
     if (draft && slot === open.length) this.renderDraft(container, file, draft);
     if (orphans.length) {
       container.createDiv({ text: "Orphaned — passage not found", cls: "sm-section" });
-      for (const t of orphans) this.renderThread(container, file, t);
+      for (const t of orphans) show(t);
     }
     if (this.showResolved && done.length) {
       container.createDiv({ text: "Resolved", cls: "sm-section" });
-      for (const t of done) this.renderThread(container, file, t);
+      for (const t of done) show(t);
     }
     container.scrollTop = prevScroll;
   }
@@ -540,7 +595,11 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     })();
   }
 
-  private renderThread(container: HTMLElement, file: TFile, item: ResolvedThread): void {
+  /**
+   * `newIds` are the comments to mark as new; `unread` is whether any are
+   * still unread (a thread that's open has been read, but keeps its markers).
+   */
+  private renderThread(container: HTMLElement, file: TFile, item: ResolvedThread, newIds: Set<string>, unread: boolean): void {
     const { thread, resolution } = item;
     const { root } = thread;
     const suggestion = suggestionOf(root);
@@ -555,6 +614,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     if (resolution.kind === "resolved" && resolution.ambiguous) cls.push("sm-ambiguous");
     if (root.id === this.focusedId) cls.push("sm-focused", "sm-expanded");
     if (root.id === this.reanchoringId) cls.push("sm-reanchoring");
+    if (unread) cls.push("sm-unread");
     // Unselected cards are compact: CSS hides everything marked sm-full-only unless the card is expanded.
     const card = container.createDiv({ cls: cls.join(" ") });
     card.dataset.smId = root.id;
@@ -622,6 +682,10 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       count.createSpan({ text: String(thread.replies.length) });
       setTooltip(count, `${thread.replies.length} ${thread.replies.length === 1 ? "reply" : "replies"}`);
     }
+    const newReplies = thread.replies.filter((reply) => newIds.has(reply.id)).length;
+    if (newReplies > 0 && !newIds.has(root.id)) {
+      info.createSpan({ text: `${newReplies} new`, cls: "sm-badge sm-badge-new sm-compact-only" });
+    }
     if (warning) {
       const badge = info.createSpan({ cls: "sm-badge sm-badge-warning sm-compact-only" });
       setIcon(badge, "alert-triangle");
@@ -636,6 +700,10 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
         icon: "crosshair",
         run: () => this.startReanchoring(file, root.id),
       });
+      const me = this.plugin.currentAuthor();
+      if ([root, ...thread.replies].some((c) => String(c.author) !== me)) {
+        menuItems.push({ title: "Mark as unread", icon: "mail", run: () => this.markUnread(file, root.id) });
+      }
     }
     if (claimsSuggestion) {
       if (isOpen && suggestion && !suggestion.result) {
@@ -724,7 +792,12 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     if (warning) details.createDiv({ text: warning, cls: "sm-suggestion-warning" });
 
     if (!claimsSuggestion || rootText.length > 0) this.renderEntry(summary, file, root, root, claimsSuggestion, copyItem);
-    for (const reply of thread.replies) this.renderEntry(details, file, root, reply, claimsSuggestion, copyItem);
+    // In a thread that isn't new itself, a line shows where its new replies begin.
+    const firstNew = newIds.has(root.id) ? undefined : thread.replies.find((reply) => newIds.has(reply.id));
+    for (const reply of thread.replies) {
+      if (reply === firstNew) details.createDiv({ text: "New", cls: "sm-new-divider" });
+      this.renderEntry(details, file, root, reply, claimsSuggestion, copyItem);
+    }
 
     // The only bottom action repairs a thread's anchor; decisions live in the header.
     if (isOpen && (resolution.kind === "orphaned" || resolution.ambiguous || (claimsSuggestion && resolution.fuzzy))) {
@@ -979,6 +1052,17 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       const formatted = formatSidebarTimestamp(timestamp, this.plugin.settings.timestampDisplay);
       if (formatted !== null) element.setText(formatted);
     }
+  }
+
+  /** Marks a thread unread and closes it, so opening it doesn't mark it read again straight away. */
+  private markUnread(file: TFile, rootId: string): void {
+    this.plugin.markThreadUnread(file, rootId);
+    if (this.focusedId === rootId) {
+      this.clearFocus();
+      this.plugin.showThreadInEditor(file, null);
+    }
+    this.opened = null;
+    this.requestRender(false);
   }
 
   /** Selects a thread and asks for its new passage (the panel in renderThread). */

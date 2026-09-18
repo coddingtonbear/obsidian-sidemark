@@ -1,5 +1,6 @@
 import { newCommentId } from "@mrsf/cli/browser";
 import {
+  debounce,
   type Editor,
   MarkdownView,
   Notice,
@@ -15,7 +16,15 @@ import { confirmAction } from "./confirm-action";
 import { type AnchorTracker, buildEditorExtension, type EditorHost, trackerOnNote } from "./editor-extension";
 import { buildExportNote, type ResolvedThread } from "./export";
 import { selectedTextHash } from "./hash";
-import { buildThreads, type Comment, isResolved, type MrsfDocument, suggestionOf, type SuggestionResult } from "./model";
+import {
+  buildThreads,
+  type Comment,
+  isResolved,
+  type MrsfDocument,
+  suggestionOf,
+  type SuggestionResult,
+  type Thread,
+} from "./model";
 import {
   type AnchorFields,
   finishSuggestion,
@@ -26,6 +35,18 @@ import {
   descendantIds,
   type SuggestionFailure,
 } from "./mutations";
+import {
+  markRead,
+  markUnread,
+  mergeReadStates,
+  parseReadState,
+  pruneNote,
+  type ReadState,
+  removeNote,
+  renameNote,
+  sweep,
+  unreadIds,
+} from "./read-state";
 import { SidemarkSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, parseSettings, settingsEffects, type SidemarkSettings } from "./settings-model";
 import { notePathFor } from "./sidecar-path";
@@ -58,10 +79,19 @@ export type AcceptResult =
 export default class SidemarkPlugin extends Plugin implements EditorHost {
   settings: SidemarkSettings = DEFAULT_SETTINGS;
   store!: SidecarStore;
+  /** Which comments have been read; saved alongside the settings. See read-state.ts. */
+  readState!: ReadState;
   private readonly trackers = new Set<AnchorTracker>();
+  /** Read state changes with every thread opened, so its saves are batched. */
+  private readonly saveReadStateSoon = debounce(() => void this.saveAll(), 2000, true);
 
   async onload(): Promise<void> {
-    this.settings = parseSettings(await this.loadData());
+    const data: unknown = await this.loadData();
+    this.settings = parseSettings(data);
+    const storedReadState = typeof data === "object" && data !== null ? (data as { readState?: unknown }).readState : undefined;
+    this.readState = parseReadState(storedReadState, new Date());
+    // Save when tracking first begins, so its start time stays put.
+    if (storedReadState === undefined) await this.saveAll();
     this.store = new SidecarStore(new VaultSidecarIO(this.app));
     this.applyHighlightAppearance();
 
@@ -175,6 +205,10 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     // Vault events also fire for every file while the vault first loads; only react afterwards.
     this.app.workspace.onLayoutReady(() => {
       void this.ensureSidebar();
+      // Forget notes deleted or moved while Obsidian wasn't watching.
+      if (sweep(this.readState, (path) => this.app.vault.getAbstractFileByPath(path) instanceof TFile)) {
+        this.saveReadStateSoon();
+      }
       this.registerEvent(this.app.vault.on("modify", (file) => this.onFileChanged(file)));
       this.registerEvent(this.app.vault.on("create", (file) => this.onFileChanged(file)));
       this.registerEvent(this.app.vault.on("delete", (file) => this.onFileDeleted(file)));
@@ -183,6 +217,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
   }
 
   onunload(): void {
+    this.saveReadStateSoon.run();
     for (const doc of this.allDocuments()) {
       doc.body.style.removeProperty("--sm-highlight-color");
       doc.body.style.removeProperty("--sm-highlight-opacity");
@@ -194,7 +229,26 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
   async updateSettings(patch: Partial<SidemarkSettings>): Promise<void> {
     const previous = this.settings;
     this.settings = parseSettings({ ...previous, ...patch });
-    await this.saveData(this.settings);
+    await this.saveAll();
+    this.applySettingsEffects(previous);
+  }
+
+  private async saveAll(): Promise<void> {
+    await this.saveData({ ...this.settings, readState: this.readState });
+  }
+
+  /** Another device's settings and read state arrived through sync. */
+  async onExternalSettingsChange(): Promise<void> {
+    const data: unknown = await this.loadData();
+    const previous = this.settings;
+    this.settings = parseSettings(data);
+    const remote = typeof data === "object" && data !== null ? (data as { readState?: unknown }).readState : undefined;
+    this.readState = mergeReadStates(this.readState, parseReadState(remote, new Date(this.readState.since)));
+    this.applySettingsEffects(previous);
+    for (const view of this.sidebars()) view.requestRender(false);
+  }
+
+  private applySettingsEffects(previous: SidemarkSettings): void {
     const effects = settingsEffects(previous, this.settings);
     if (effects.refreshHighlights) this.applyHighlightAppearance();
     if (effects.refreshEditors) for (const tracker of this.trackers) tracker.refresh();
@@ -414,7 +468,10 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     // The tracker of the editor `noteText` read, so `fuzzy` compares like with like.
     const tracker = this.trackerFor(file.path, this.markdownViewFor(file)?.editor);
     const tracked =new Map((tracker?.anchors ?? []).map((a) => [a.id, a]));
-    return buildThreads(state.doc).map((thread) => {
+    const threads = buildThreads(state.doc);
+    // A sidecar that can't be read has no threads to go by; keep what's recorded for it.
+    if (!state.error && pruneNote(this.readState, file.path, threads)) this.saveReadStateSoon();
+    return threads.map((thread) => {
       const { root } = thread;
       const live = tracked.get(root.id);
       let resolution: Resolution;
@@ -434,6 +491,22 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       }
       return { thread, resolution };
     });
+  }
+
+  // ── Read tracking used by the sidebar ─────────────────────
+
+  /** The ids of a thread's comments not yet read (none in a resolved thread). */
+  unreadIn(file: TFile, thread: Thread): Set<string> {
+    return unreadIds(this.readState, file.path, thread, this.currentAuthor());
+  }
+
+  markThreadRead(file: TFile, thread: Thread): void {
+    if (markRead(this.readState, file.path, thread, this.currentAuthor())) this.saveReadStateSoon();
+  }
+
+  markThreadUnread(file: TFile, rootId: string): void {
+    markUnread(this.readState, file.path, rootId);
+    this.saveReadStateSoon();
   }
 
   private async anchorFromEditor(editor: Editor): Promise<AnchorFields | null> {
@@ -642,6 +715,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       void this.store.sidecarChanged(notePath);
     } else if (file instanceof TFile && file.extension === "md") {
       void this.store.noteDeleted(file.path);
+      if (removeNote(this.readState, file.path)) this.saveReadStateSoon();
     }
   }
 
@@ -650,6 +724,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     if (file instanceof TFile && file.extension === "md") {
       for (const tracker of this.trackersFor(oldPath)) tracker.noteRenamed(file.path);
       void this.store.noteRenamed(oldPath, file.path).then((outcome) => this.reportRename(outcome, file.path));
+      if (renameNote(this.readState, oldPath, file.path)) this.saveReadStateSoon();
     } else if (file instanceof TFolder) {
       // Sidecars moved with the folder; their `document` fields still name the old path.
       const visit = (folder: TFolder): void => {
@@ -658,6 +733,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
           else if (child instanceof TFile && child.extension === "md") {
             const previous = oldPath + child.path.slice(file.path.length);
             for (const tracker of this.trackersFor(previous)) tracker.noteRenamed(child.path);
+            if (renameNote(this.readState, previous, child.path)) this.saveReadStateSoon();
             void this.store.noteRenamed(previous, child.path, true).then((outcome) => this.reportRename(outcome, child.path));
           }
         }

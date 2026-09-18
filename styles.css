@@ -533,6 +533,51 @@
   text-overflow: ellipsis;
 }
 
+/* ── Unread ─────────────────────────────────────────────────
+   A closed thread with comments you haven't read gets a dot and a bold
+   author; an open one marks where its new replies begin. */
+.sm-new-count {
+  font-weight: 400;
+  color: var(--interactive-accent);
+}
+
+.sm-card.sm-unread:not(.sm-expanded) .sm-card-header > .sm-author {
+  font-weight: 600;
+}
+
+.sm-card.sm-unread:not(.sm-expanded) .sm-card-header > .sm-author::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--interactive-accent);
+  vertical-align: middle;
+}
+
+.sm-badge.sm-badge-new {
+  color: var(--interactive-accent);
+}
+
+.sm-new-divider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 4px;
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--interactive-accent);
+}
+
+.sm-new-divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--interactive-accent);
+}
+
 /* Re-anchoring: the thread waits for its new passage to be selected in the note. */
 .sm-card:not(.sm-reanchoring) .sm-reanchor-panel,
 .sm-card.sm-reanchoring .sm-repair-actions {
