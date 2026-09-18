@@ -329,6 +329,16 @@
   min-height: 64px;
 }
 
+/* An open thread is read and written at the note's own size rather than
+   Obsidian's smaller interface sizes (15px for the sidebar, 13px for text
+   boxes), so it follows the Appearance font size slider as the note does.
+   Compact cards stay at the interface size. */
+.sm-card.sm-expanded .sm-text,
+.sm-card.sm-expanded .sm-suggestion-diff,
+.sm-input {
+  font-size: var(--font-text-size);
+}
+
 .sm-edit-actions {
   justify-content: flex-end;
 }
