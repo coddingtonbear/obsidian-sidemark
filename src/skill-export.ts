@@ -219,8 +219,10 @@ The sidebar orders a thread's replies by \`timestamp\` and labels each one
   reuse a reading from earlier in the session. Several comments written at
   once may share one reading.
 - **The \`mrsf\` CLI stamps the time itself**, so \`add\` needs no clock reading.
-- **If there's no way to read the clock**, tell the user instead of writing a
-  guessed time.
+- **If there's no way to read the clock**, don't guess. Give a reply a time
+  one second after the newest comment already in its thread, and a new
+  thread one second after the newest comment in the sidecar. It keeps
+  things in order, even though the time itself is wrong.
 
 ## Acting on comments
 
