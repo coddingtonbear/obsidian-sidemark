@@ -460,8 +460,9 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       new Notice("Select some text first.");
       return;
     }
+    const from = editor.posToOffset(editor.getCursor("from"));
     const view = await this.openSidebar();
-    view?.startDraft({ filePath: file.path, anchor, kind });
+    view?.startDraft({ filePath: file.path, anchor, from, kind });
   }
 
   async revealThread(file: TFile, id: string): Promise<void> {
