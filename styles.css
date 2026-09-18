@@ -133,9 +133,23 @@
   color: var(--text-muted);
 }
 
+/* The time and any badges, kept together so a narrow card can move the pair to
+   its own line (see "Narrow sidebars" at the end of this file). */
+.sm-meta-info {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
 .sm-author {
   font-weight: 400;
   color: var(--text-normal);
+  /* A long name gives way instead of pushing the time and the buttons out of the card. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sm-author-colored {
@@ -521,4 +535,79 @@
 .sm-card:focus-visible {
   outline: 2px solid var(--interactive-accent);
   outline-offset: 1px;
+}
+
+/* ── Narrow sidebars ───────────────────────────────────────
+   Obsidian lets a side dock go down to 200px, which leaves a card about 166px
+   of content — less than a name, a full timestamp and the decide buttons need
+   on one line. Each card is its own query container, so the header reacts to
+   the width it actually has; when the row won't fit, the time and badges drop
+   to a line of their own and the name and buttons keep the top line.
+   The widths below are card widths, roughly the sidebar's width less 30px. */
+.sm-card {
+  container-type: inline-size;
+}
+
+/* An expanded card and every reply row show the full timestamp, which is the
+   widest thing in the row: measured against Obsidian's default fonts, one line
+   stops holding all three at about a 340px sidebar. */
+@container (max-width: 300px) {
+  .sm-card.sm-expanded .sm-card-header,
+  .sm-entry .sm-meta {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "author controls"
+      "info info";
+    align-items: center;
+    row-gap: 1px;
+  }
+
+  .sm-card.sm-expanded .sm-card-header > .sm-author,
+  .sm-entry .sm-meta > .sm-author {
+    grid-area: author;
+  }
+
+  .sm-card.sm-expanded .sm-card-header > .sm-meta-info,
+  .sm-entry .sm-meta > .sm-meta-info {
+    grid-area: info;
+    flex-wrap: wrap;
+  }
+
+  .sm-card.sm-expanded .sm-card-header > .sm-entry-controls,
+  .sm-entry .sm-meta > .sm-entry-controls {
+    grid-area: controls;
+  }
+
+  /* On its own line the date may still be too wide, so let it break after the date. */
+  .sm-card.sm-expanded .sm-card-header .sm-ts {
+    white-space: normal;
+  }
+}
+
+/* A compact card shows a short time ("5m") instead, so it only needs the second
+   line near the sidebar's minimum — measured at about 260px. */
+@container (max-width: 230px) {
+  .sm-card:not(.sm-expanded) .sm-card-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "author controls"
+      "info info";
+    align-items: center;
+    row-gap: 1px;
+  }
+
+  .sm-card:not(.sm-expanded) .sm-card-header > .sm-author {
+    grid-area: author;
+  }
+
+  .sm-card:not(.sm-expanded) .sm-card-header > .sm-meta-info {
+    grid-area: info;
+    flex-wrap: wrap;
+  }
+
+  .sm-card:not(.sm-expanded) .sm-card-header > .sm-entry-controls {
+    grid-area: controls;
+  }
 }

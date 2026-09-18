@@ -563,16 +563,19 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     const header = card.createDiv({ cls: "sm-meta sm-card-header" });
     const author = String(root.author);
     this.paintAuthor(header.createSpan({ text: author, cls: "sm-author" }), author);
-    this.addTimestamp(header, String(root.timestamp), "sm-full-only");
-    this.addShortTimestamp(header, String(root.timestamp));
+    // Time and badges share a wrapper so a narrow sidebar can drop the pair to
+    // a line of its own and leave the name and the buttons on top (styles.css).
+    const info = header.createDiv({ cls: "sm-meta-info" });
+    this.addTimestamp(info, String(root.timestamp), "sm-full-only");
+    this.addShortTimestamp(info, String(root.timestamp));
     if (thread.replies.length > 0) {
-      const count = header.createSpan({ cls: "sm-badge sm-compact-only" });
+      const count = info.createSpan({ cls: "sm-badge sm-compact-only" });
       setIcon(count.createSpan({ cls: "sm-badge-icon" }), "message-square");
       count.createSpan({ text: String(thread.replies.length) });
       setTooltip(count, `${thread.replies.length} ${thread.replies.length === 1 ? "reply" : "replies"}`);
     }
     if (warning) {
-      const badge = header.createSpan({ cls: "sm-badge sm-badge-warning sm-compact-only" });
+      const badge = info.createSpan({ cls: "sm-badge sm-badge-warning sm-compact-only" });
       setIcon(badge, "alert-triangle");
       setTooltip(badge, warning);
     }
@@ -741,7 +744,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     if (!isRoot) {
       const meta = row.createDiv({ cls: "sm-meta" });
       this.paintAuthor(meta.createSpan({ text: author, cls: "sm-author" }), author);
-      this.addTimestamp(meta, String(entry.timestamp));
+      this.addTimestamp(meta.createDiv({ cls: "sm-meta-info" }), String(entry.timestamp));
       const controls = meta.createDiv({ cls: "sm-entry-controls" });
       this.addMenuTrigger(controls, `More options for reply by ${author}`, [
         copyItem,
