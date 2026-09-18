@@ -27,6 +27,23 @@ const resyncEffect = StateEffect.define<null>();
 /** Marks a thread's passage as the active one (or none), e.g. when its card is selected in the sidebar. */
 const showThreadEffect = StateEffect.define<string | null>();
 
+/** How long a smooth scroll may take before its position is corrected anyway. */
+const SCROLL_SETTLE_MS = 1000;
+
+/** Space kept above a passage too tall to center. */
+const TALL_PASSAGE_MARGIN = 48;
+
+/**
+ * The scroll position that puts a passage (in scrolled-content coordinates)
+ * in the middle of a viewport `height` tall, or its start near the top when
+ * it's too tall to fit.
+ */
+export function centeredScrollTop(passage: { top: number; bottom: number }, height: number): number {
+  const size = passage.bottom - passage.top;
+  const top = size > height ? passage.top - TALL_PASSAGE_MARGIN : passage.top + size / 2 - height / 2;
+  return Math.max(0, top);
+}
+
 /**
  * Whether a passage's box lies entirely within the editor's visible area. A
  * passage with no box (null: it isn't rendered, being far off screen) isn't.
@@ -204,11 +221,8 @@ export class AnchorTracker {
     if (this.destroyed) return;
     const anchor = id ? this.anchors.find((a) => a.id === id) : undefined;
     const effects: StateEffect<unknown>[] = [showThreadEffect.of(anchor ? anchor.id : null)];
-    if (anchor && !this.passageOnScreen(anchor)) {
-      // With the head at the passage's start, a passage taller than the editor shows its beginning.
-      effects.push(EditorView.scrollIntoView(EditorSelection.range(anchor.to, anchor.from), { y: "center" }));
-    }
     this.view.dispatch({ effects });
+    if (anchor && !this.passageOnScreen(anchor)) this.easeToPassage(anchor);
   }
 
   private passageOnScreen(anchor: TrackedAnchor): boolean {
@@ -216,6 +230,49 @@ export class AnchorTracker {
     const end = this.view.coordsAtPos(anchor.to, -1);
     const passage = start && end ? { top: start.top, bottom: end.bottom } : null;
     return fullyVisible(passage, this.view.scrollDOM.getBoundingClientRect());
+  }
+
+  /**
+   * Scrolls a passage to the middle of the editor, easing there rather than
+   * jumping (CodeMirror's own scrolling can't animate). A passage far off
+   * screen isn't laid out yet, so its position is CodeMirror's estimate; once
+   * the scroll settles, anything the estimate got wrong is corrected at once.
+   */
+  private easeToPassage(anchor: TrackedAnchor): void {
+    const { view } = this;
+    const scroller = view.scrollDOM;
+    const frame = scroller.getBoundingClientRect();
+    // Converts viewport coordinates to positions within the scrolled content.
+    const toContent = scroller.scrollTop - frame.top;
+    const start = view.coordsAtPos(anchor.from, 1);
+    const end = view.coordsAtPos(anchor.to, -1);
+    const documentTop = view.documentTop + toContent;
+    const passage = {
+      top: start ? start.top + toContent : documentTop + view.lineBlockAt(anchor.from).top,
+      bottom: end ? end.bottom + toContent : documentTop + view.lineBlockAt(anchor.to).bottom,
+    };
+    // The note may be in a pop-out window, whose timers and media queries are its own.
+    const win = scroller.ownerDocument.defaultView ?? window;
+    const reduceMotion = win.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const settle = (): void => {
+      if (this.destroyed || this.passageOnScreen(anchor)) return;
+      // With the head at the passage's start, a passage taller than the editor shows its beginning.
+      view.dispatch({ effects: EditorView.scrollIntoView(EditorSelection.range(anchor.to, anchor.from), { y: "center" }) });
+    };
+    if (reduceMotion) {
+      scroller.scrollTo({ top: centeredScrollTop(passage, frame.height) });
+      settle();
+      return;
+    }
+    // Only this scroll's end should correct it; a later scroll by the user mustn't.
+    const done = (): void => {
+      win.clearTimeout(timeout);
+      scroller.removeEventListener("scrollend", done);
+      settle();
+    };
+    const timeout = win.setTimeout(done, SCROLL_SETTLE_MS);
+    scroller.addEventListener("scrollend", done);
+    scroller.scrollTo({ top: centeredScrollTop(passage, frame.height), behavior: "smooth" });
   }
 
   /** Rebuilds decorations, e.g. after a display setting changed. */
