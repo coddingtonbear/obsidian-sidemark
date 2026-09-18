@@ -51,7 +51,7 @@ class FakeScroller {
   scrollTop = 0;
   reduceMotion = false;
   readonly scrolls: ScrollToOptions[] = [];
-  private readonly listeners = new Set<() => void>();
+  private readonly listeners = new Map<string, Set<() => void>>();
   readonly ownerDocument = {
     defaultView: {
       matchMedia: () => ({ matches: this.reduceMotion }),
@@ -65,18 +65,28 @@ class FakeScroller {
   scrollTo(options: ScrollToOptions): void {
     this.scrolls.push(options);
   }
-  addEventListener(_type: "scrollend", listener: () => void): void {
-    this.listeners.add(listener);
+  addEventListener(type: string, listener: () => void): void {
+    const set = this.listeners.get(type) ?? new Set();
+    set.add(listener);
+    this.listeners.set(type, set);
   }
-  removeEventListener(_type: "scrollend", listener: () => void): void {
-    this.listeners.delete(listener);
+  removeEventListener(type: string, listener: () => void): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+  private fire(type: string): void {
+    for (const listener of [...(this.listeners.get(type) ?? [])]) listener();
   }
   /** The smooth scroll finished. */
   end(): void {
-    for (const listener of [...this.listeners]) listener();
+    this.fire("scrollend");
   }
+  /** The user turned the mouse wheel over the note. */
+  wheel(): void {
+    this.fire("wheel");
+  }
+  /** How many listeners are still attached, of any kind. */
   get listening(): number {
-    return this.listeners.size;
+    return [...this.listeners.values()].reduce((sum, set) => sum + set.size, 0);
   }
 }
 
@@ -503,6 +513,42 @@ describe("AnchorTracker", () => {
     h.tracker.showThread("b");
     const before = h.dispatched.length;
     h.onScreen = true;
+    h.scroller.end();
+    expect(h.dispatched.length).toBe(before);
+  });
+
+  it("gives up correcting a scroll once the user scrolls or picks another thread", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a"), commentOn(TEXT, "Second", "b")]);
+    await settle();
+    h.onScreen = false;
+    h.tracker.showThread("b");
+    let before = h.dispatched.length;
+    h.scroller.wheel();
+    h.scroller.end();
+    expect(h.dispatched.length).toBe(before);
+    expect(h.scroller.listening).toBe(0);
+    // A newer selection replaces the pending one: only its scroll is corrected.
+    h.tracker.showThread("b");
+    h.tracker.showThread("a");
+    before = h.dispatched.length;
+    h.scroller.end();
+    expect(h.dispatched.length).toBe(before + 1);
+    expect(h.scroller.listening).toBe(0);
+  });
+
+  it("corrects to where the passage is after an edit during the scroll, or not at all if it's gone", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "Second", "b")]);
+    await settle();
+    h.onScreen = false;
+    h.tracker.showThread("b");
+    h.insert(0, "Inserted line\n");
+    let before = h.dispatched.length;
+    h.scroller.end();
+    expect(h.dispatched.length).toBe(before + 1);
+    h.tracker.showThread("b");
+    h.apply({ changes: { from: 0, to: h.text().length, insert: "" } });
+    await settle();
+    before = h.dispatched.length;
     h.scroller.end();
     expect(h.dispatched.length).toBe(before);
   });
