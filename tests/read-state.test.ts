@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Comment, Thread } from "../src/model";
 import {
   commentKey,
+  hasBaseline,
   markRead,
   markUnread,
   mergeReadStates,
@@ -9,6 +10,7 @@ import {
   pruneNote,
   type ReadState,
   renameNote,
+  sameReadState,
   sweep,
   unreadIds,
 } from "../src/read-state";
@@ -80,11 +82,12 @@ describe("unreadIds", () => {
 });
 
 describe("markRead", () => {
-  it("records only what can't be worked out, and reports whether anything changed", () => {
+  it("records everyone else's comments in the thread, and reports whether anything changed", () => {
     const state = fresh();
     const t = thread(comment("r", "Claude", BEFORE), comment("x", "Adam", AFTER), comment("y", "Claude", AFTER));
     expect(markRead(state, NOTE, t, "Adam", 1)).toBe(true);
-    expect(state.notes[NOTE].r).toEqual({ seen: [commentKey("y")], at: 1 });
+    // Even "r", from before tracking began, so the entry holds after a merge with an earlier start.
+    expect(state.notes[NOTE].r).toEqual({ seen: [commentKey("r"), commentKey("y")], at: 1 });
     expect(unreadIds(state, NOTE, t, "Adam").size).toBe(0);
     expect(markRead(state, NOTE, t, "Adam", 2)).toBe(false);
   });
@@ -126,16 +129,26 @@ describe("pruneNote", () => {
       thread(comment("a", "Claude", AFTER), comment("a2", "Claude", AFTER)),
       thread(comment("b", "Claude", AFTER, { resolved: true })),
     ];
-    expect(pruneNote(state, NOTE, now)).toBe(true);
+    expect(pruneNote(state, NOTE, now, "Adam")).toBe(true);
     expect(Object.keys(state.notes[NOTE])).toEqual(["a"]);
     expect(state.notes[NOTE].a.seen).toEqual([commentKey("a"), commentKey("a2")]);
-    expect(pruneNote(state, NOTE, now)).toBe(false);
+    expect(pruneNote(state, NOTE, now, "Adam")).toBe(false);
+  });
+
+  it("drops an entry once no one else's comments are left in its thread, even one marked unread", () => {
+    const state = fresh();
+    const t = thread(comment("a", "Adam", AFTER), comment("a1", "Claude", AFTER));
+    markRead(state, NOTE, t, "Adam");
+    markUnread(state, NOTE, "b");
+    const now = [thread(comment("a", "Adam", AFTER)), thread(comment("b", "Adam", AFTER))];
+    expect(pruneNote(state, NOTE, now, "Adam")).toBe(true);
+    expect(state.notes).toEqual({});
   });
 
   it("drops the note once none of its threads need an entry", () => {
     const state = fresh();
     markRead(state, NOTE, thread(comment("a", "Claude", AFTER)), "Adam");
-    pruneNote(state, NOTE, []);
+    pruneNote(state, NOTE, [], "Adam");
     expect(state.notes).toEqual({});
   });
 });
@@ -175,8 +188,43 @@ describe("mergeReadStates", () => {
     expect(unreadIds(mergeReadStates(readLater, unreadEarlier), NOTE, t, "Adam").size).toBe(2);
   });
 
+  it("keeps a comment read on the device that began tracking later read after the merge", () => {
+    // The later device only counted "r" as read because it predates its own start...
+    const later = parseReadState(undefined, new Date(AFTER));
+    const t2 = thread(comment("r", "Claude", "2026-09-18T12:30:00Z"), comment("y", "Claude", "2026-09-18T14:00:00Z"));
+    markRead(later, NOTE, t2, "Adam", 1);
+    // ...but after merging with a device that began at noon, "r" is after the start, and must still be read.
+    const merged = mergeReadStates(fresh(), later);
+    expect(merged.since).toBe(SINCE);
+    expect(unreadIds(merged, NOTE, t2, "Adam").size).toBe(0);
+  });
+
   it("keeps the earlier start of tracking", () => {
     const later = parseReadState(undefined, new Date(AFTER));
     expect(mergeReadStates(later, fresh()).since).toBe(SINCE);
+  });
+});
+
+describe("hasBaseline", () => {
+  it("needs a valid start of tracking", () => {
+    expect(hasBaseline({ since: SINCE, notes: {} })).toBe(true);
+    expect(hasBaseline(undefined)).toBe(false);
+    expect(hasBaseline(null)).toBe(false);
+    expect(hasBaseline({})).toBe(false);
+    expect(hasBaseline({ since: "not a date" })).toBe(false);
+  });
+});
+
+describe("sameReadState", () => {
+  it("ignores the order of notes, threads and keys, but not their contents", () => {
+    const a = fresh();
+    markRead(a, NOTE, thread(comment("r", "Claude", AFTER), comment("y", "Claude", AFTER)), "Adam", 1);
+    markRead(a, "Other.md", thread(comment("o", "Claude", AFTER)), "Adam", 1);
+    const b = parseReadState(JSON.parse(JSON.stringify(a)), new Date(AFTER));
+    b.notes[NOTE].r.seen.reverse();
+    const reordered = { since: b.since, notes: { "Other.md": b.notes["Other.md"], [NOTE]: b.notes[NOTE] } };
+    expect(sameReadState(a, reordered)).toBe(true);
+    markUnread(b, NOTE, "r", 2);
+    expect(sameReadState(a, b)).toBe(false);
   });
 });

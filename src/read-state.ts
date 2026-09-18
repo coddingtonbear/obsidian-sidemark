@@ -8,6 +8,9 @@ import { type Comment, isResolved, type Thread, timeOf } from "./model";
  * Only what can't be worked out is stored: your own comments always count as
  * read, and so does anything dated before tracking began (`since`), so a
  * thread only needs an entry once someone else has commented on it since.
+ * An entry, once made, lists every comment by someone else that was read,
+ * whatever its date, so it still holds when merged with a device that
+ * began tracking earlier.
  * Entries exist only for open threads, and are dropped when their thread is
  * resolved or deleted or their note goes away, so the whole record stays
  * smaller than the open comments in the vault's sidecars.
@@ -37,6 +40,11 @@ function parseThreadRead(value: unknown): ThreadRead | null {
   const seen = value.seen.filter((key): key is string => typeof key === "string");
   const at = typeof value.at === "number" && Number.isFinite(value.at) ? value.at : 0;
   return value.unread === true ? { seen, unread: true, at } : { seen, at };
+}
+
+/** Whether stored read state records when tracking began; without that, it has to be saved again. */
+export function hasBaseline(value: unknown): boolean {
+  return isRecord(value) && typeof value.since === "string" && Number.isFinite(Date.parse(value.since));
 }
 
 /**
@@ -104,10 +112,11 @@ function setThread(state: ReadState, notePath: string, rootId: string, read: Thr
 /** Marks every comment in a thread read; returns whether anything changed. */
 export function markRead(state: ReadState, notePath: string, thread: Thread, me: string, now = Date.now()): boolean {
   if (unreadIds(state, notePath, thread, me).size === 0) return false;
+  // Every comment by someone else, not only those since tracking began: a merge
+  // with a device that began earlier would otherwise find the older ones unread.
   const seen = threadComments(thread)
-    .filter((comment) => needsEntry(state, comment, me))
+    .filter((comment) => String(comment.author) !== me)
     .map((comment) => commentKey(comment.id));
-  // Kept even when empty, so a merge with another device knows this was read after any "unread" there.
   setThread(state, notePath, thread.root.id, { seen, at: now });
   return true;
 }
@@ -119,24 +128,29 @@ export function markUnread(state: ReadState, notePath: string, rootId: string, n
 
 /**
  * Drops what a note's current threads no longer need: entries for threads
- * that were resolved or deleted, and keys of deleted comments. Returns
- * whether anything was dropped.
+ * that were resolved or deleted or no longer have anyone else's comments,
+ * keys of deleted comments, and entries left with nothing read and no
+ * "unread" mark. Returns whether anything was dropped.
  */
-export function pruneNote(state: ReadState, notePath: string, threads: Thread[]): boolean {
+export function pruneNote(state: ReadState, notePath: string, threads: Thread[], me: string): boolean {
   const entries = state.notes[notePath];
   if (!entries) return false;
   const open = new Map(threads.filter((t) => !isResolved(t.root)).map((t) => [t.root.id, t]));
   let changed = false;
   for (const [rootId, read] of Object.entries(entries)) {
     const thread = open.get(rootId);
-    if (!thread) {
+    const others = thread ? threadComments(thread).filter((comment) => String(comment.author) !== me) : [];
+    if (others.length === 0) {
       setThread(state, notePath, rootId, null);
       changed = true;
       continue;
     }
-    const existing = new Set(threadComments(thread).map((comment) => commentKey(comment.id)));
+    const existing = new Set(others.map((comment) => commentKey(comment.id)));
     const seen = read.seen.filter((key) => existing.has(key));
-    if (seen.length !== read.seen.length) {
+    if (seen.length === 0 && !read.unread) {
+      setThread(state, notePath, rootId, null);
+      changed = true;
+    } else if (seen.length !== read.seen.length) {
       setThread(state, notePath, rootId, { ...read, seen });
       changed = true;
     }
@@ -195,4 +209,24 @@ export function mergeReadStates(local: ReadState, remote: ReadState): ReadState 
     merged.notes[notePath] = threads;
   }
   return merged;
+}
+
+/** Whether two read states say the same thing, so a merge that changed nothing needn't be saved. */
+export function sameReadState(a: ReadState, b: ReadState): boolean {
+  const canonical = (state: ReadState): string =>
+    JSON.stringify({
+      since: state.since,
+      notes: Object.keys(state.notes)
+        .sort()
+        .map((path) => [
+          path,
+          Object.keys(state.notes[path])
+            .sort()
+            .map((id) => {
+              const read = state.notes[path][id];
+              return [id, [...read.seen].sort(), read.unread === true, read.at];
+            }),
+        ]),
+    });
+  return canonical(a) === canonical(b);
 }

@@ -46,6 +46,8 @@ import {
   renameNote,
   sweep,
   unreadIds,
+  hasBaseline,
+  sameReadState,
 } from "./read-state";
 import { SidemarkSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, parseSettings, settingsEffects, type SidemarkSettings } from "./settings-model";
@@ -90,8 +92,9 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     this.settings = parseSettings(data);
     const storedReadState = typeof data === "object" && data !== null ? (data as { readState?: unknown }).readState : undefined;
     this.readState = parseReadState(storedReadState, new Date());
-    // Save when tracking first begins, so its start time stays put.
-    if (storedReadState === undefined) await this.saveAll();
+    // Save when tracking first begins (or what was stored had no usable start),
+    // so its start time stays put across reloads.
+    if (!hasBaseline(storedReadState)) await this.saveAll();
     this.store = new SidecarStore(new VaultSidecarIO(this.app));
     this.applyHighlightAppearance();
 
@@ -239,11 +242,19 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
 
   /** Another device's settings and read state arrived through sync. */
   async onExternalSettingsChange(): Promise<void> {
+    // A batched save firing now would write this device's older settings over
+    // the ones that just arrived; the merge below takes its read state in.
+    this.saveReadStateSoon.cancel();
     const data: unknown = await this.loadData();
     const previous = this.settings;
     this.settings = parseSettings(data);
-    const remote = typeof data === "object" && data !== null ? (data as { readState?: unknown }).readState : undefined;
-    this.readState = mergeReadStates(this.readState, parseReadState(remote, new Date(this.readState.since)));
+    const stored = typeof data === "object" && data !== null ? (data as { readState?: unknown }).readState : undefined;
+    const remote = parseReadState(stored, new Date(this.readState.since));
+    this.readState = mergeReadStates(this.readState, remote);
+    // Send back what this device adds, so other devices get it too. Saving only
+    // when the merge differs from what arrived keeps devices from answering
+    // each other's saves forever.
+    if (!sameReadState(this.readState, remote)) this.saveReadStateSoon();
     this.applySettingsEffects(previous);
     for (const view of this.sidebars()) view.requestRender(false);
   }
@@ -470,7 +481,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     const tracked =new Map((tracker?.anchors ?? []).map((a) => [a.id, a]));
     const threads = buildThreads(state.doc);
     // A sidecar that can't be read has no threads to go by; keep what's recorded for it.
-    if (!state.error && pruneNote(this.readState, file.path, threads)) this.saveReadStateSoon();
+    if (!state.error && pruneNote(this.readState, file.path, threads, this.currentAuthor())) this.saveReadStateSoon();
     return threads.map((thread) => {
       const { root } = thread;
       const live = tracked.get(root.id);
@@ -719,12 +730,19 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     }
   }
 
+  /** Read state follows a note's comments, which stay at the old path when the new one already had some. */
+  private readStateRenamed(outcome: RenameOutcome, from: string, to: string): void {
+    if (outcome !== "conflict" && renameNote(this.readState, from, to)) this.saveReadStateSoon();
+  }
+
   private onFileRenamed(file: TAbstractFile, oldPath: string): void {
     if (notePathFor(file.path) || notePathFor(oldPath)) return;
     if (file instanceof TFile && file.extension === "md") {
       for (const tracker of this.trackersFor(oldPath)) tracker.noteRenamed(file.path);
-      void this.store.noteRenamed(oldPath, file.path).then((outcome) => this.reportRename(outcome, file.path));
-      if (renameNote(this.readState, oldPath, file.path)) this.saveReadStateSoon();
+      void this.store.noteRenamed(oldPath, file.path).then((outcome) => {
+        this.reportRename(outcome, file.path);
+        this.readStateRenamed(outcome, oldPath, file.path);
+      });
     } else if (file instanceof TFolder) {
       // Sidecars moved with the folder; their `document` fields still name the old path.
       const visit = (folder: TFolder): void => {
@@ -733,8 +751,10 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
           else if (child instanceof TFile && child.extension === "md") {
             const previous = oldPath + child.path.slice(file.path.length);
             for (const tracker of this.trackersFor(previous)) tracker.noteRenamed(child.path);
-            if (renameNote(this.readState, previous, child.path)) this.saveReadStateSoon();
-            void this.store.noteRenamed(previous, child.path, true).then((outcome) => this.reportRename(outcome, child.path));
+            void this.store.noteRenamed(previous, child.path, true).then((outcome) => {
+              this.reportRename(outcome, child.path);
+              this.readStateRenamed(outcome, previous, child.path);
+            });
           }
         }
       };
