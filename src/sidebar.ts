@@ -15,6 +15,7 @@ import {
 import { resolveAuthorColor } from "./author-color";
 import { autoGrow } from "./auto-grow";
 import { confirmAction } from "./confirm-action";
+import { draftSlot, threadStart } from "./draft-slot";
 import { formatThread, formatTs, type ResolvedThread } from "./export";
 import type SidemarkPlugin from "./main";
 import { type Comment, isResolved, suggestionOf, threadActivity } from "./model";
@@ -40,6 +41,8 @@ export const VIEW_TYPE_SIDEMARK = "sidemark-sidebar";
 export interface Draft {
   filePath: string;
   anchor: AnchorFields;
+  /** Offset in the note where the selected passage starts, for placing the draft's card. */
+  from: number;
   kind: "comment" | "suggestion";
 }
 
@@ -227,8 +230,8 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     });
     toggle.onclick = () => this.toggleResolved();
 
-    if (this.draft && this.draft.filePath === file.path) this.renderDraft(container, file, this.draft);
-    else this.draft = null;
+    if (this.draft?.filePath !== file.path) this.draft = null;
+    const draft = this.draft;
 
     const open = this.sorted(threads.filter((t) => !isResolved(t.thread.root) && t.resolution.kind === "resolved"));
     const orphans = this.sorted(threads.filter((t) => !isResolved(t.thread.root) && t.resolution.kind === "orphaned"));
@@ -244,7 +247,13 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       return;
     }
 
-    for (const t of open) this.renderThread(container, file, t);
+    // The draft goes where its comment will show once saved.
+    const slot = draft ? draftSlot(this.plugin.settings.sidebarSortOrder, draft.from, open) : -1;
+    open.forEach((t, index) => {
+      if (draft && index === slot) this.renderDraft(container, file, draft);
+      this.renderThread(container, file, t);
+    });
+    if (draft && slot === open.length) this.renderDraft(container, file, draft);
     if (orphans.length) {
       container.createDiv({ text: "Orphaned — passage not found", cls: "sm-section" });
       for (const t of orphans) this.renderThread(container, file, t);
@@ -259,8 +268,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
   private sorted(items: ResolvedThread[]): ResolvedThread[] {
     const order = this.plugin.settings.sidebarSortOrder;
     if (order === "document") {
-      const start = (t: ResolvedThread) => (t.resolution.kind === "resolved" ? t.resolution.from : Number.MAX_SAFE_INTEGER);
-      return [...items].sort((a, b) => start(a) - start(b));
+      return [...items].sort((a, b) => threadStart(a) - threadStart(b));
     }
     const direction = order === "newest" ? -1 : 1;
     return [...items].sort((a, b) => direction * (threadActivity(a.thread) - threadActivity(b.thread)));
@@ -310,7 +318,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       cls: "sm-input",
       attr: { placeholder: "Comment…", rows: "3", "aria-label": "New comment" },
     });
-    autoGrow(input, this.contentEl);
+    autoGrow(input);
     window.setTimeout(() => input.focus(), 0);
     let saving = false;
     const save = (): void => {
@@ -344,7 +352,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       attr: { placeholder: "Leave empty to suggest deleting the text", rows: "3", "aria-label": "Suggested replacement" },
     });
     replacement.value = draft.anchor.selected_text;
-    autoGrow(replacement, this.contentEl);
+    autoGrow(replacement);
     const deletionHint = card.createDiv({ text: "This suggests deleting the selected text.", cls: "sm-field-hint" });
     const preview = card.createDiv({ cls: "sm-suggestion-diff sm-draft-preview", attr: { "aria-label": "Preview of the change" } });
     const updateHint = (): void => {
@@ -359,7 +367,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       cls: "sm-input",
       attr: { placeholder: "Why this change?", rows: "2", "aria-label": "Suggestion explanation" },
     });
-    autoGrow(note, this.contentEl);
+    autoGrow(note);
     const actions = card.createDiv({ cls: "sm-actions" });
     const save = actions.createEl("button", { text: "Add suggestion", cls: "mod-cta" });
     setTooltip(save, `Add suggestion (${this.submitShortcutLabel()})`);
@@ -688,7 +696,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
         cls: "sm-input",
         attr: { placeholder: "Reply…", rows: "2", "aria-label": "Reply" },
       });
-      autoGrow(reply, this.contentEl);
+      autoGrow(reply);
       const cancel = (): void => {
         reply.value = "";
         this.setPendingInput(card, false);
@@ -784,7 +792,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       input.value = text;
       textEl.replaceWith(input);
       // Fit only once the box is in place; detached, it has nothing to measure.
-      autoGrow(input, this.contentEl);
+      autoGrow(input);
       const editActions = row.createDiv({ cls: "sm-actions sm-edit-actions" });
       const save = editActions.createEl("button", { text: "Save", cls: "mod-cta" });
       setTooltip(save, `Save (${this.submitShortcutLabel()})`);

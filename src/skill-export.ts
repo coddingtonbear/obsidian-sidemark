@@ -67,7 +67,7 @@ comments:
     x_suffix: " fox jumps over the "
   - id: 27f0f28c-0559-4c46-8951-5d2359b8bb6c
     author: Claude
-    timestamp: 2026-09-16T08:54:12.000Z
+    timestamp: 2026-09-16T08:54:12Z
     text: Agreed, rewording.
     resolved: false
     reply_to: 0818f29c-400a-4124-8420-185d6fdc18fa
@@ -83,7 +83,7 @@ relative to the vault root), \`comments\` (a flat list; threads are formed by
 | --- | --- |
 | \`id\` | Required. Unique and opaque. Sidemark writes a random UUID; do the same. |
 | \`author\` | Required. Display name. MRSF recommends \`Display Name (identifier)\`; in practice match what's already in the vault (see Authoring). |
-| \`timestamp\` | Required. ISO 8601 with a timezone, e.g. \`2026-09-17T16:40:00.000Z\`. Take it from \`date\`, never from memory. |
+| \`timestamp\` | Required. ISO 8601 in UTC, e.g. \`2026-09-17T16:43:27Z\`. Read it from the clock when writing the comment (see Timestamps under Authoring). |
 | \`text\` | Required. The comment. Sidemark renders it as Markdown, so \`[[wikilinks]]\` work. Empty on a suggestion that has no explanation. |
 | \`resolved\` | Required boolean. |
 | \`reply_to\` | On a reply: the \`id\` of the comment it answers. Replies carry no position fields. |
@@ -203,6 +203,26 @@ entries involved, and leave everything else byte for byte.
   the reason in \`text\` (or \`text: ""\`). Use \`replacement: ""\` to propose a
   deletion. **Don't edit the note** when suggesting.
 - Keep comments short and specific. One concern per thread.
+
+### Timestamps
+
+The sidebar orders a thread's replies by \`timestamp\` and labels each one
+"5m ago", so a made-up time puts a reply above the comment it answers.
+
+- **Read the clock for every comment you write**, just before writing it:
+
+  \`\`\`sh
+  date -u +%Y-%m-%dT%H:%M:%SZ
+  \`\`\`
+
+  Use that output as is. Don't estimate, round, pad with \`.000\`, or
+  reuse a reading from earlier in the session. Several comments written at
+  once may share one reading.
+- **The \`mrsf\` CLI stamps the time itself**, so \`add\` needs no clock reading.
+- **If there's no way to read the clock**, don't guess. Give a reply a time
+  one second after the newest comment already in its thread, and a new
+  thread one second after the newest comment in the sidecar. It keeps
+  things in order, even though the time itself is wrong.
 
 ## Acting on comments
 
