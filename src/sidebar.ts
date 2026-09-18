@@ -249,11 +249,21 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
 
     const header = container.createDiv({ cls: "sm-header" });
     header.createSpan({ text: "Comments", cls: "sm-title" });
-    const toggle = header.createEl("button", {
-      text: this.showResolved ? "Hide resolved" : "Show resolved",
-      cls: "sm-toggle",
+    const trigger = header.createEl("button", {
+      cls: "sm-entry-menu-trigger clickable-icon",
+      attr: { "aria-label": "More options for comments", "aria-haspopup": "menu", "aria-expanded": "false" },
     });
-    toggle.onclick = () => this.toggleResolved();
+    setIcon(trigger, "ellipsis");
+    trigger.onclick = () =>
+      this.showMenu(trigger, (menu) => {
+        menu.addItem((item) =>
+          item
+            .setTitle("Show resolved threads")
+            .setIcon("check-check")
+            .setChecked(this.showResolved)
+            .onClick(() => this.toggleResolved())
+        );
+      });
 
     if (this.draft?.filePath !== file.path) this.draft = null;
     const draft = this.draft;
@@ -269,7 +279,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     if (!open.length && !orphans.length && !(this.showResolved && done.length) && !this.draft) {
       container.createDiv({
         text: done.length
-          ? "No open comments. Use “Show resolved” to see resolved ones."
+          ? "No open comments. Use “Show resolved threads” in the ⋯ menu to see resolved ones."
           : "No comments yet. Select text and use “Add comment”.",
         cls: "sm-empty",
       });
