@@ -13,3 +13,16 @@ export const editorInfoField = StateField.define<MockFileInfo>({
 });
 
 export const Platform = { isDesktop: false, isDesktopApp: false, isMobile: false };
+
+export class Notice {
+  constructor(readonly message: string) {}
+}
+
+export class PluginSettingTab {
+  constructor(
+    readonly app: unknown,
+    readonly plugin: unknown
+  ) {}
+
+  refreshDomState(): void {}
+}
