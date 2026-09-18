@@ -464,6 +464,7 @@
   align-items: center;
   gap: 2px;
   color: var(--text-faint);
+  white-space: nowrap;
 }
 
 .sm-badge svg,
