@@ -1,9 +1,10 @@
 import { parseSidecarContent } from "@mrsf/cli/browser";
 import { EditorState, type StateEffect, type TransactionSpec } from "@codemirror/state";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
+import type { Editor } from "obsidian";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { anchorFieldsFor } from "../src/anchoring";
-import { AnchorTracker, type EditorHost } from "../src/editor-extension";
+import { AnchorTracker, type EditorHost, trackerOnNote } from "../src/editor-extension";
 import type { Comment, MrsfDocument } from "../src/model";
 import { addComment, retarget } from "../src/mutations";
 import { serializeSidecar } from "../src/sidecar-yaml";
@@ -54,7 +55,12 @@ class Harness {
   inline = true;
   file: NonNullable<MockFileInfo["file"]>;
 
-  constructor(text: string, comments: Comment[], path = NOTE) {
+  constructor(
+    text: string,
+    comments: Comment[],
+    path = NOTE,
+    readonly editor?: object
+  ) {
     this.file = { path, extension: "md" };
     const doc: MrsfDocument = { mrsf_version: "1.0", document: path, comments };
     this.io.files.set(`${path}.review.yaml`, serializeSidecar(null, doc));
@@ -80,8 +86,8 @@ class Harness {
   }
 
   private createState(text: string): EditorState {
-    const file = this.file;
-    return EditorState.create({ doc: text, extensions: [editorInfoField.init(() => ({ file }))] });
+    const { file, editor } = this;
+    return EditorState.create({ doc: text, extensions: [editorInfoField.init(() => ({ file, editor }))] });
   }
 
   text(): string {
@@ -516,5 +522,40 @@ describe("AnchorTracker", () => {
     });
     await settle();
     expect(h.highlighted()).toEqual(["quick brown", "Second"]);
+  });
+
+  describe("with the note open in more than one pane", () => {
+    function panes() {
+      const left = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")], NOTE, {});
+      const right = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")], NOTE, {});
+      const other = new Harness(TEXT, [], "Other.md", {});
+      return { left, right, other, trackers: [other.tracker, left.tracker, right.tracker] };
+    }
+
+    it("knows which editor it belongs to", () => {
+      const { left } = panes();
+      expect(left.tracker.editor).toBe(left.editor);
+    });
+
+    it("picks the tracker of the editor being worked in, not the first on the note", () => {
+      const { right, trackers } = panes();
+      expect(trackerOnNote(trackers, NOTE, right.editor as Editor)).toBe(right.tracker);
+    });
+
+    it("falls back to the first tracker on the note without an editor", () => {
+      const { left, trackers } = panes();
+      expect(trackerOnNote(trackers, NOTE)).toBe(left.tracker);
+    });
+
+    it("falls back to the first tracker on the note when the editor has none", () => {
+      const { left, trackers } = panes();
+      expect(trackerOnNote(trackers, NOTE, {} as Editor)).toBe(left.tracker);
+    });
+
+    it("never returns another note's tracker, even for its editor", () => {
+      const { left, other, trackers } = panes();
+      expect(trackerOnNote(trackers, NOTE, other.editor as Editor)).toBe(left.tracker);
+      expect(trackerOnNote(trackers, "Missing.md", left.editor as Editor)).toBeUndefined();
+    });
   });
 });

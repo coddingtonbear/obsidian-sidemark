@@ -12,7 +12,7 @@ import {
 import { anchorFieldsFor, type Resolution, resolveComment } from "./anchoring";
 import { detectOsUsername, resolveAuthorName, AUTHOR_OVERRIDE_KEY, FALLBACK_AUTHOR } from "./author";
 import { confirmAction } from "./confirm-action";
-import { type AnchorTracker, buildEditorExtension, type EditorHost } from "./editor-extension";
+import { type AnchorTracker, buildEditorExtension, type EditorHost, trackerOnNote } from "./editor-extension";
 import { buildExportNote, type ResolvedThread } from "./export";
 import { selectedTextHash } from "./hash";
 import { buildThreads, type Comment, isResolved, type MrsfDocument, suggestionOf, type SuggestionResult } from "./model";
@@ -299,7 +299,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
 
   private suggestionCommand(checking: boolean, editor: Editor, file: TFile | null, result: SuggestionResult): boolean {
     if (!file) return false;
-    const anchor = this.trackerFor(file.path)?.suggestionAt(editor.posToOffset(editor.getCursor()));
+    const anchor = this.trackerFor(file.path, editor)?.suggestionAt(editor.posToOffset(editor.getCursor()));
     if (!anchor) return false;
     if (!checking) void this.decideSuggestionIn(file, anchor.id, result);
     return true;
@@ -307,7 +307,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
 
   /** Selects the next (or previous) open suggestion after the cursor, wrapping around the note. */
   private jumpToSuggestion(checking: boolean, editor: Editor, file: TFile | null, direction: 1 | -1): boolean {
-    const suggestions = file ? (this.trackerFor(file.path)?.openSuggestions() ?? []) : [];
+    const suggestions = file ? (this.trackerFor(file.path, editor)?.openSuggestions() ?? []) : [];
     if (suggestions.length === 0) return false;
     if (checking) return true;
     const cursor = editor.posToOffset(editor.getCursor(direction === 1 ? "to" : "from"));
@@ -340,9 +340,9 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     }, 2000);
   }
 
-  private trackerFor(notePath: string): AnchorTracker | undefined {
-    for (const tracker of this.trackers) if (tracker.notePath === notePath) return tracker;
-    return undefined;
+  /** Pass the editor whose offsets the caller works with; see `trackerOnNote`. */
+  private trackerFor(notePath: string, editor?: Editor): AnchorTracker | undefined {
+    return trackerOnNote(this.trackers, notePath, editor);
   }
 
   private trackersFor(notePath: string): AnchorTracker[] {
@@ -414,8 +414,9 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
   async resolveThreads(file: TFile): Promise<ResolvedThread[]> {
     const state = await this.store.load(file.path);
     const text = await this.noteText(file);
-    const tracker = this.trackerFor(file.path);
-    const tracked = new Map((tracker?.anchors ?? []).map((a) => [a.id, a]));
+    // The tracker of the editor `noteText` read, so `fuzzy` compares like with like.
+    const tracker = this.trackerFor(file.path, this.markdownViewFor(file)?.editor);
+    const tracked =new Map((tracker?.anchors ?? []).map((a) => [a.id, a]));
     return buildThreads(state.doc).map((thread) => {
       const { root } = thread;
       const live = tracked.get(root.id);
@@ -472,7 +473,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     }
     if (!view) return;
     const editor = view.editor;
-    const live = this.trackerFor(file.path)?.anchors.find((a) => a.id === id);
+    const live = this.trackerFor(file.path, editor)?.anchors.find((a) => a.id === id);
     let range: { from: number; to: number } | null = live ?? null;
     if (!range) {
       const comment = findComment((await this.store.load(file.path)).doc, id);
@@ -512,7 +513,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
         return;
       }
       const text = editor.getValue();
-      const tracker = this.trackerFor(file.path);
+      const tracker = this.trackerFor(file.path, editor);
       if (tracker?.isAmbiguous(id)) {
         result.outcome = { ok: false, reason: "ambiguous" };
         return;

@@ -3,6 +3,8 @@ import { StateField } from "@codemirror/state";
 /** Minimal stand-ins for the parts of the Obsidian API that load in unit tests. */
 export interface MockFileInfo {
   file: { path: string; extension: string } | null;
+  /** Stands in for the Obsidian `Editor`; only its identity matters in tests. */
+  editor?: object;
 }
 
 export const editorInfoField = StateField.define<MockFileInfo>({
