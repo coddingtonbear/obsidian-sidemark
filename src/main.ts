@@ -249,10 +249,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
 
   threadAtCursor(notePath: string, id: string | null): void {
     if (this.app.workspace.getActiveFile()?.path !== notePath) return;
-    for (const view of this.sidebars()) {
-      if (id) view.focusThread(id);
-      else view.clearFocus();
-    }
+    for (const view of this.sidebars()) view.followCursor(id);
   }
 
   showSuggestionsInline(): boolean {
