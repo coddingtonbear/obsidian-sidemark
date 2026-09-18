@@ -318,7 +318,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       cls: "sm-input",
       attr: { placeholder: "Comment…", rows: "3", "aria-label": "New comment" },
     });
-    autoGrow(input, this.contentEl);
+    autoGrow(input);
     window.setTimeout(() => input.focus(), 0);
     let saving = false;
     const save = (): void => {
@@ -352,7 +352,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       attr: { placeholder: "Leave empty to suggest deleting the text", rows: "3", "aria-label": "Suggested replacement" },
     });
     replacement.value = draft.anchor.selected_text;
-    autoGrow(replacement, this.contentEl);
+    autoGrow(replacement);
     const deletionHint = card.createDiv({ text: "This suggests deleting the selected text.", cls: "sm-field-hint" });
     const preview = card.createDiv({ cls: "sm-suggestion-diff sm-draft-preview", attr: { "aria-label": "Preview of the change" } });
     const updateHint = (): void => {
@@ -367,7 +367,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       cls: "sm-input",
       attr: { placeholder: "Why this change?", rows: "2", "aria-label": "Suggestion explanation" },
     });
-    autoGrow(note, this.contentEl);
+    autoGrow(note);
     const actions = card.createDiv({ cls: "sm-actions" });
     const save = actions.createEl("button", { text: "Add suggestion", cls: "mod-cta" });
     setTooltip(save, `Add suggestion (${this.submitShortcutLabel()})`);
@@ -692,7 +692,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
         cls: "sm-input",
         attr: { placeholder: "Reply…", rows: "2", "aria-label": "Reply" },
       });
-      autoGrow(reply, this.contentEl);
+      autoGrow(reply);
       const cancel = (): void => {
         reply.value = "";
         this.setPendingInput(card, false);
@@ -788,7 +788,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
       input.value = text;
       textEl.replaceWith(input);
       // Fit only once the box is in place; detached, it has nothing to measure.
-      autoGrow(input, this.contentEl);
+      autoGrow(input);
       const editActions = row.createDiv({ cls: "sm-actions sm-edit-actions" });
       const save = editActions.createEl("button", { text: "Save", cls: "mod-cta" });
       setTooltip(save, `Save (${this.submitShortcutLabel()})`);

@@ -1,16 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { autoGrow, type GrowableBox } from "../src/auto-grow";
+import { autoGrow, type BoxHolder, type GrowableBox } from "../src/auto-grow";
+
+/** The element around a box, recording the min-heights it's given. */
+class FakeHolder implements BoxHolder {
+  offsetHeight = 500;
+  minHeight = "";
+  minHeightsSet: string[] = [];
+  setCssStyles(styles: { minHeight: string }): void {
+    this.minHeight = styles.minHeight;
+    this.minHeightsSet.push(styles.minHeight);
+  }
+}
 
 /**
  * A stand-in for a <textarea> with `border` px of border: with no inline
  * height it sits at its natural (rows) height, and scrollHeight is the larger
- * of that and the text's height.
+ * of that and the text's height. While its text overflows and its scrollbar
+ * isn't hidden, the scrollbar narrows the text, which then needs
+ * `scrollbarExtra` px more.
  */
 class FakeBox implements GrowableBox {
   height = "";
+  overflowY = "";
   textHeight: number;
+  scrollbarExtra = 0;
   displayed = true;
   heightsSet: string[] = [];
+  readonly parentElement = new FakeHolder();
+  /** The holder's min-height at each measurement (each time the height is cleared). */
+  holderDuringMeasure: string[] = [];
   private listeners: (() => void)[] = [];
 
   constructor(
@@ -26,7 +44,9 @@ class FakeBox implements GrowableBox {
     return this.height ? parseFloat(this.height) - this.border : this.naturalHeight;
   }
   get scrollHeight(): number {
-    return this.displayed ? Math.max(this.innerHeight, this.textHeight) : 0;
+    if (!this.displayed) return 0;
+    const scrollbar = this.overflowY !== "hidden" && this.textHeight > this.innerHeight;
+    return Math.max(this.innerHeight, this.textHeight + (scrollbar ? this.scrollbarExtra : 0));
   }
   get clientHeight(): number {
     return this.innerHeight;
@@ -34,9 +54,12 @@ class FakeBox implements GrowableBox {
   get offsetHeight(): number {
     return this.displayed ? this.innerHeight + this.border : 0;
   }
-  setCssStyles(styles: { height: string }): void {
+  setCssStyles(styles: { height?: string; overflowY?: string }): void {
+    if (styles.overflowY !== undefined) this.overflowY = styles.overflowY;
+    if (styles.height === undefined) return;
     this.height = styles.height;
     this.heightsSet.push(styles.height);
+    if (styles.height === "") this.holderDuringMeasure.push(this.parentElement.minHeight);
   }
   addEventListener(_type: "input", listener: () => void): void {
     this.listeners.push(listener);
@@ -95,16 +118,19 @@ describe("autoGrow", () => {
     expect(box.height).toBe("102px");
   });
 
-  it("restores the scroller's position after measuring", () => {
+  it("measures with its scrollbar hidden, so the text wraps as wide as it's shown", () => {
     const box = new FakeBox(100);
-    const scroller = { scrollTop: 300 };
-    // Simulate the sidebar jumping when the box briefly shrinks.
-    box.setCssStyles = function (this: FakeBox, styles: { height: string }) {
-      FakeBox.prototype.setCssStyles.call(this, styles);
-      if (styles.height === "") scroller.scrollTop = 0;
-    };
-    autoGrow(box, scroller);
-    expect(scroller.scrollTop).toBe(300);
+    box.scrollbarExtra = 18;
+    autoGrow(box);
     expect(box.height).toBe("102px");
+    expect(box.overflowY).toBe("");
+  });
+
+  it("holds the element around it at its height while measuring, then lets it go", () => {
+    const box = new FakeBox(100);
+    autoGrow(box);
+    box.type(200);
+    expect(box.holderDuringMeasure).toEqual(["500px", "500px"]);
+    expect(box.parentElement.minHeight).toBe("");
   });
 });
