@@ -1,8 +1,220 @@
-import { type App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
+import { type App, Notice, Platform, PluginSettingTab, type SettingDefinitionItem } from "obsidian";
 import type SidemarkPlugin from "./main";
-import { DEFAULT_SETTINGS, type SidebarSortOrder, type SubmitShortcut, type TimestampDisplay } from "./settings-model";
-import type { ResolveBehavior } from "./mutations";
+import { DEFAULT_SETTINGS, parseSettings, type SidemarkSettings } from "./settings-model";
 import { exportSkill } from "./skill-export";
+
+/** The parts of the plugin the settings tab reads and writes. */
+export interface SettingsHost {
+  readonly settings: SidemarkSettings;
+  updateSettings(patch: Partial<SidemarkSettings>): Promise<void>;
+  detectedAuthor(): string;
+  authorOverride(): string;
+  setAuthorOverride(value: string): void;
+  migrateTandem(): Promise<void>;
+}
+
+/**
+ * Keys bound to declarative controls. `authorName` is the device-local name
+ * override, which lives in local storage rather than in the synced settings;
+ * the rest are settings fields.
+ */
+export type SettingsControlKey =
+  | "authorName"
+  | Exclude<keyof SidemarkSettings, "highlightColor" | "authorColorOverrides" | "sidebarAdded">;
+
+const CONTROL_KEYS: ReadonlySet<string> = new Set<SettingsControlKey>([
+  "authorName",
+  "highlightOpacity",
+  "colorAuthorNames",
+  "showResolvedByDefault",
+  "resolveBehavior",
+  "sidebarSortOrder",
+  "submitShortcut",
+  "timestampDisplay",
+  "confirmDestructiveActions",
+  "showSuggestionsInline",
+]);
+
+function isControlKey(key: string): key is SettingsControlKey {
+  return CONTROL_KEYS.has(key);
+}
+
+export function readControl(host: SettingsHost, key: string): unknown {
+  if (!isControlKey(key)) return undefined;
+  return key === "authorName" ? host.authorOverride() : host.settings[key];
+}
+
+export async function writeControl(host: SettingsHost, key: string, value: unknown): Promise<void> {
+  if (!isControlKey(key)) return;
+  if (key === "authorName") {
+    if (typeof value === "string") host.setAuthorOverride(value);
+    return;
+  }
+  // parseSettings validates the value, the same way it does data loaded from disk.
+  await host.updateSettings(parseSettings({ ...host.settings, [key]: value }));
+}
+
+/**
+ * The settings tab, grouped by where each setting shows up: the note, the
+ * sidebar, what happens when threads are resolved or deleted, then one-off tools.
+ */
+export function settingDefinitions(
+  host: SettingsHost,
+  options: { desktopApp: boolean }
+): SettingDefinitionItem<SettingsControlKey>[] {
+  return [
+    {
+      type: "group",
+      items: [
+        {
+          name: "Your name",
+          desc: "Shown on comments you write from this device. Stored on this device only, so people sharing a vault keep their own names.",
+          control: { type: "text", key: "authorName", placeholder: host.detectedAuthor() },
+        },
+      ],
+    },
+    {
+      type: "group",
+      heading: "In the note",
+      items: [
+        {
+          name: "Highlight color",
+          render: (setting) => {
+            setting.addColorPicker((picker) => {
+              picker
+                .setValue(host.settings.highlightColor)
+                .onChange((value) => void host.updateSettings({ highlightColor: value }));
+              setting.addExtraButton((button) =>
+                button
+                  .setIcon("rotate-ccw")
+                  .setTooltip("Reset")
+                  .onClick(async () => {
+                    await host.updateSettings({ highlightColor: DEFAULT_SETTINGS.highlightColor });
+                    picker.setValue(DEFAULT_SETTINGS.highlightColor);
+                  })
+              );
+            });
+          },
+        },
+        {
+          name: "Highlight opacity",
+          control: { type: "slider", key: "highlightOpacity", min: 10, max: 80, step: 5, displayFormat: (value) => `${value}%` },
+        },
+        {
+          name: "Show suggestions in the note",
+          desc: "Strike through the text a suggestion would replace and show the replacement after it. Turn off to highlight suggestions like comments.",
+          control: { type: "toggle", key: "showSuggestionsInline" },
+        },
+      ],
+    },
+    {
+      type: "group",
+      heading: "In the sidebar",
+      items: [
+        {
+          name: "Sort threads by",
+          control: {
+            type: "dropdown",
+            key: "sidebarSortOrder",
+            options: { document: "Position in note", newest: "Newest activity", oldest: "Oldest activity" },
+          },
+        },
+        {
+          name: "Timestamps",
+          control: {
+            type: "dropdown",
+            key: "timestampDisplay",
+            options: { full: "Full", compact: "Compact", relative: "Relative (5 minutes ago)", hidden: "Hidden" },
+          },
+        },
+        {
+          name: "Send comments with",
+          control: {
+            type: "dropdown",
+            key: "submitShortcut",
+            options: { enter: "Enter (Shift+Enter for a new line)", "mod-enter": "Cmd/Ctrl+Enter" },
+          },
+        },
+        {
+          name: "Color author names",
+          desc: "Give each author a consistent color in the sidebar.",
+          control: { type: "toggle", key: "colorAuthorNames" },
+        },
+      ],
+    },
+    {
+      type: "group",
+      heading: "Resolving and deleting",
+      items: [
+        {
+          name: "When a thread is resolved",
+          desc: "Keeping resolved threads leaves them in the comment file as history; they never appear in the note itself.",
+          control: {
+            type: "dropdown",
+            key: "resolveBehavior",
+            options: { keep: "Keep it as resolved", remove: "Delete it" },
+          },
+        },
+        {
+          name: "Show resolved threads by default",
+          visible: () => host.settings.resolveBehavior === "keep",
+          control: { type: "toggle", key: "showResolvedByDefault" },
+        },
+        {
+          name: "Confirm before deleting",
+          control: { type: "toggle", key: "confirmDestructiveActions" },
+        },
+      ],
+    },
+    {
+      type: "group",
+      heading: "Tools",
+      items: [
+        {
+          name: "Claude Code skill",
+          desc:
+            "Teaches Claude Code to read and write Sidemark comment files. Writes the bundled skill to " +
+            "~/.claude/skills/sidemark-comments/SKILL.md, replacing what's there.",
+          // The skill is written outside the vault, to the user's home
+          // directory, which mobile Obsidian has no way to reach.
+          visible: options.desktopApp,
+          render: (setting) => {
+            setting.addButton((button) =>
+              button.setButtonText("Install skill").onClick(() => {
+                try {
+                  new Notice("Skill installed: " + exportSkill());
+                } catch (error) {
+                  new Notice("Install failed: " + (error instanceof Error ? error.message : String(error)));
+                }
+              })
+            );
+          },
+        },
+        {
+          name: "Convert tandem-comments blocks",
+          desc:
+            "Moves the comments and suggestions stored in tandem-comments blocks into Sidemark comment files, " +
+            "then removes the blocks from your notes. Notes whose blocks can't be read are left untouched.",
+          render: (setting) => {
+            setting.addButton((button) =>
+              button
+                .setButtonText("Convert…")
+                .setCta()
+                .onClick(async () => {
+                  button.setDisabled(true);
+                  try {
+                    await host.migrateTandem();
+                  } finally {
+                    button.setDisabled(false);
+                  }
+                })
+            );
+          },
+        },
+      ],
+    },
+  ];
+}
 
 export class SidemarkSettingTab extends PluginSettingTab {
   constructor(
@@ -12,155 +224,17 @@ export class SidemarkSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
-  display(): void {
-    const { containerEl } = this;
-    const plugin = this.plugin;
-    const settings = plugin.settings;
-    containerEl.empty();
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return settingDefinitions(this.plugin, { desktopApp: Platform.isDesktop && Platform.isDesktopApp });
+  }
 
-    new Setting(containerEl)
-      .setName("Your name")
-      .setDesc("Shown on comments you write from this device. Stored on this device only, so people sharing a vault keep their own names.")
-      .addText((text) =>
-        text
-          .setPlaceholder(plugin.detectedAuthor())
-          .setValue(plugin.authorOverride())
-          .onChange((value) => plugin.setAuthorOverride(value))
-      );
+  getControlValue(key: string): unknown {
+    return readControl(this.plugin, key);
+  }
 
-    new Setting(containerEl).setName("Appearance").setHeading();
-    new Setting(containerEl)
-      .setName("Highlight color")
-      .addColorPicker((picker) =>
-        picker.setValue(settings.highlightColor).onChange((value) => void plugin.updateSettings({ highlightColor: value }))
-      )
-      .addExtraButton((button) =>
-        button
-          .setIcon("rotate-ccw")
-          .setTooltip("Reset")
-          .onClick(async () => {
-            await plugin.updateSettings({ highlightColor: DEFAULT_SETTINGS.highlightColor });
-            this.display();
-          })
-      );
-    new Setting(containerEl)
-      .setName("Highlight opacity")
-      .addSlider((slider) =>
-        slider
-          .setLimits(10, 80, 5)
-          .setValue(settings.highlightOpacity)
-          .setDynamicTooltip()
-          .onChange((value) => void plugin.updateSettings({ highlightOpacity: value }))
-      );
-    new Setting(containerEl)
-      .setName("Color author names")
-      .setDesc("Give each author a consistent color in the sidebar.")
-      .addToggle((toggle) =>
-        toggle.setValue(settings.colorAuthorNames).onChange((value) => void plugin.updateSettings({ colorAuthorNames: value }))
-      );
-    new Setting(containerEl)
-      .setName("Show suggestions in the note")
-      .setDesc("Strike through the text a suggestion would replace and show the replacement after it. Turn off to highlight suggestions like comments.")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(settings.showSuggestionsInline)
-          .onChange((value) => void plugin.updateSettings({ showSuggestionsInline: value }))
-      );
-    new Setting(containerEl)
-      .setName("Timestamps")
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOptions({ full: "Full", compact: "Compact", relative: "Relative (5 minutes ago)", hidden: "Hidden" })
-          .setValue(settings.timestampDisplay)
-          .onChange((value) => void plugin.updateSettings({ timestampDisplay: value as TimestampDisplay }))
-      );
-    new Setting(containerEl)
-      .setName("Sort threads by")
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOptions({ document: "Position in note", newest: "Newest activity", oldest: "Oldest activity" })
-          .setValue(settings.sidebarSortOrder)
-          .onChange((value) => void plugin.updateSettings({ sidebarSortOrder: value as SidebarSortOrder }))
-      );
-
-    new Setting(containerEl).setName("Behavior").setHeading();
-    new Setting(containerEl)
-      .setName("When a thread is resolved")
-      .setDesc("Keeping resolved threads leaves them in the comment file as history; they never appear in the note itself.")
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOptions({ keep: "Keep it as resolved", remove: "Delete it" })
-          .setValue(settings.resolveBehavior)
-          .onChange(async (value) => {
-            await plugin.updateSettings({ resolveBehavior: value as ResolveBehavior });
-            this.display();
-          })
-      );
-    if (settings.resolveBehavior === "keep") {
-      new Setting(containerEl)
-        .setName("Show resolved threads by default")
-        .addToggle((toggle) =>
-          toggle
-            .setValue(settings.showResolvedByDefault)
-            .onChange((value) => void plugin.updateSettings({ showResolvedByDefault: value }))
-        );
-    }
-    new Setting(containerEl)
-      .setName("Send comments with")
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOptions({ enter: "Enter (Shift+Enter for a new line)", "mod-enter": "Cmd/Ctrl+Enter" })
-          .setValue(settings.submitShortcut)
-          .onChange((value) => void plugin.updateSettings({ submitShortcut: value as SubmitShortcut }))
-      );
-    new Setting(containerEl)
-      .setName("Confirm before deleting")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(settings.confirmDestructiveActions)
-          .onChange((value) => void plugin.updateSettings({ confirmDestructiveActions: value }))
-      );
-
-    new Setting(containerEl).setName("Migration").setHeading();
-    new Setting(containerEl)
-      .setName("Convert tandem-comments blocks")
-      .setDesc(
-        "Moves the comments and suggestions stored in tandem-comments blocks into Sidemark comment files, " +
-          "then removes the blocks from your notes. Notes whose blocks can't be read are left untouched."
-      )
-      .addButton((button) =>
-        button
-          .setButtonText("Convert…")
-          .setCta()
-          .onClick(async () => {
-            button.setDisabled(true);
-            try {
-              await plugin.migrateTandem();
-            } finally {
-              button.setDisabled(false);
-            }
-          })
-      );
-
-    // Desktop only: the skill is written outside the vault, to the user's home
-    // directory, which mobile Obsidian has no way to reach.
-    if (Platform.isDesktop && Platform.isDesktopApp) {
-      new Setting(containerEl).setName("Claude Code").setHeading();
-      new Setting(containerEl)
-        .setName("Sidemark skill")
-        .setDesc(
-          "Teaches Claude Code to read and write Sidemark comment files. Writes the bundled skill to " +
-            "~/.claude/skills/sidemark-comments/SKILL.md, replacing what's there."
-        )
-        .addButton((button) =>
-          button.setButtonText("Install skill").onClick(() => {
-            try {
-              new Notice("Skill installed: " + exportSkill());
-            } catch (error) {
-              new Notice("Install failed: " + (error instanceof Error ? error.message : String(error)));
-            }
-          })
-        );
-    }
+  async setControlValue(key: string, value: unknown): Promise<void> {
+    await writeControl(this.plugin, key, value);
+    // Other rows' `visible` predicates read the settings just written.
+    this.refreshDomState();
   }
 }
