@@ -1,4 +1,4 @@
-import { type Range, StateEffect, type Text } from "@codemirror/state";
+import { EditorSelection, type Range, StateEffect, type Text } from "@codemirror/state";
 import {
   closeHoverTooltips,
   Decoration,
@@ -26,6 +26,17 @@ const resyncEffect = StateEffect.define<null>();
 
 /** Marks a thread's passage as the active one (or none), e.g. when its card is selected in the sidebar. */
 const showThreadEffect = StateEffect.define<string | null>();
+
+/**
+ * Whether a passage's box lies entirely within the editor's visible area. A
+ * passage with no box (null: it isn't rendered, being far off screen) isn't.
+ */
+export function fullyVisible(
+  passage: { top: number; bottom: number } | null,
+  viewport: { top: number; bottom: number }
+): boolean {
+  return passage !== null && passage.top >= viewport.top && passage.bottom <= viewport.bottom;
+}
 
 export interface EditorHost {
   readonly store: SidecarStore;
@@ -184,15 +195,27 @@ export class AnchorTracker {
   }
 
   /**
-   * Shows a thread's passage as the active one and scrolls it into view,
-   * without moving the cursor or taking focus. Pass null to clear it.
+   * Shows a thread's passage as the active one, without moving the cursor or
+   * taking focus. Pass null to clear it. A passage that isn't entirely on
+   * screen is scrolled to the middle of the editor; one that is stays put, so
+   * picking a thread whose passage you can already see doesn't move the note.
    */
   showThread(id: string | null): void {
     if (this.destroyed) return;
     const anchor = id ? this.anchors.find((a) => a.id === id) : undefined;
     const effects: StateEffect<unknown>[] = [showThreadEffect.of(anchor ? anchor.id : null)];
-    if (anchor) effects.push(EditorView.scrollIntoView(anchor.from, { y: "nearest", yMargin: 48 }));
+    if (anchor && !this.passageOnScreen(anchor)) {
+      // With the head at the passage's start, a passage taller than the editor shows its beginning.
+      effects.push(EditorView.scrollIntoView(EditorSelection.range(anchor.to, anchor.from), { y: "center" }));
+    }
     this.view.dispatch({ effects });
+  }
+
+  private passageOnScreen(anchor: TrackedAnchor): boolean {
+    const start = this.view.coordsAtPos(anchor.from, 1);
+    const end = this.view.coordsAtPos(anchor.to, -1);
+    const passage = start && end ? { top: start.top, bottom: end.bottom } : null;
+    return fullyVisible(passage, this.view.scrollDOM.getBoundingClientRect());
   }
 
   /** Rebuilds decorations, e.g. after a display setting changed. */

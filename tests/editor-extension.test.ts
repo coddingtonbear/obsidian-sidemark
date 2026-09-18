@@ -4,7 +4,7 @@ import type { EditorView, ViewUpdate } from "@codemirror/view";
 import type { Editor } from "obsidian";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { anchorFieldsFor } from "../src/anchoring";
-import { AnchorTracker, type EditorHost, trackerOnNote } from "../src/editor-extension";
+import { AnchorTracker, type EditorHost, fullyVisible, trackerOnNote } from "../src/editor-extension";
 import type { Comment, MrsfDocument } from "../src/model";
 import { addComment, retarget } from "../src/mutations";
 import { serializeSidecar } from "../src/sidecar-yaml";
@@ -53,6 +53,9 @@ class Harness {
   readonly tracker: AnchorTracker;
   readonly threadAtCursor = vi.fn();
   inline = true;
+  /** Whether every passage is entirely inside the editor's visible area. */
+  onScreen = true;
+  readonly dispatched: TransactionSpec[] = [];
   file: NonNullable<MockFileInfo["file"]>;
 
   constructor(
@@ -70,7 +73,13 @@ class Harness {
         return harness.state;
       },
       requestMeasure: vi.fn(),
-      dispatch: (spec: TransactionSpec) => this.apply(spec),
+      dispatch: (spec: TransactionSpec) => {
+        harness.dispatched.push(spec);
+        this.apply(spec);
+      },
+      // Every passage is either inside a 0–100px editor or not rendered at all.
+      coordsAtPos: () => (harness.onScreen ? { top: 10, bottom: 20, left: 0, right: 0 } : null),
+      scrollDOM: { getBoundingClientRect: () => ({ top: 0, bottom: 100 }) },
     };
     const harness = this;
     const host: EditorHost = {
@@ -422,6 +431,20 @@ describe("AnchorTracker", () => {
     expect(h.decorated().some(([, cls]) => cls.includes("active"))).toBe(false);
   });
 
+  it("scrolls a thread's passage to the middle only when it isn't entirely on screen", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+    await settle();
+    const effectCount = (): number => [h.dispatched[h.dispatched.length - 1]?.effects ?? []].flat().length;
+    h.tracker.showThread("a");
+    // Only the active-thread marker; a visible passage isn't scrolled.
+    expect(effectCount()).toBe(1);
+    h.onScreen = false;
+    h.tracker.showThread("a");
+    expect(effectCount()).toBe(2);
+    h.tracker.showThread(null);
+    expect(effectCount()).toBe(1);
+  });
+
   it("marks suggestion highlights differently", async () => {
     const suggestion = { ...commentOn(TEXT, "Second", "s"), type: "suggestion", x_suggestion: { replacement: "2nd" } };
     const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a"), suggestion]);
@@ -557,5 +580,23 @@ describe("AnchorTracker", () => {
       expect(trackerOnNote(trackers, NOTE, other.editor as Editor)).toBe(left.tracker);
       expect(trackerOnNote(trackers, "Missing.md", left.editor as Editor)).toBeUndefined();
     });
+  });
+});
+
+describe("fullyVisible", () => {
+  const viewport = { top: 100, bottom: 500 };
+
+  it("accepts a passage inside the viewport, edges included", () => {
+    expect(fullyVisible({ top: 100, bottom: 500 }, viewport)).toBe(true);
+    expect(fullyVisible({ top: 200, bottom: 220 }, viewport)).toBe(true);
+  });
+
+  it("rejects a passage cut off at the top or the bottom", () => {
+    expect(fullyVisible({ top: 90, bottom: 120 }, viewport)).toBe(false);
+    expect(fullyVisible({ top: 480, bottom: 520 }, viewport)).toBe(false);
+  });
+
+  it("rejects a passage that isn't rendered", () => {
+    expect(fullyVisible(null, viewport)).toBe(false);
   });
 });
