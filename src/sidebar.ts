@@ -33,6 +33,7 @@ import {
   type SuggestionFailure,
 } from "./mutations";
 import { shouldSubmitComment } from "./settings-model";
+import { hasTextSelectedIn } from "./text-selection";
 import { formatSidebarTimestamp, shortTimestamp } from "./timestamp";
 import { wordDiff } from "./word-diff";
 
@@ -639,6 +640,7 @@ export class SidemarkSidebar extends ItemView implements HoverParent {
     };
     card.addEventListener("click", (event) => {
       if (event.target instanceof Element && event.target.closest("button, textarea, a, input")) return;
+      if (hasTextSelectedIn(card.doc.getSelection(), card)) return;
       select();
     });
     // Keyboard users select a card by focusing it and pressing Enter or Space.
