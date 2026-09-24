@@ -2,7 +2,7 @@ import { newCommentId } from "@mrsf/cli/browser";
 import {
   debounce,
   type Editor,
-  type Events,
+  Events,
   MarkdownView,
   Notice,
   normalizePath,
@@ -13,6 +13,7 @@ import {
 } from "obsidian";
 import { anchorFieldsFor, type Resolution, resolveComment } from "./anchoring";
 import { detectOsUsername, resolveAuthorName, AUTHOR_OVERRIDE_KEY, FALLBACK_AUTHOR } from "./author";
+import { diffComments } from "./comment-events";
 import { confirmAction } from "./confirm-action";
 import { type AnchorTracker, buildEditorExtension, type EditorHost, trackerOnNote } from "./editor-extension";
 import { buildExportNote, type ResolvedThread } from "./export";
@@ -56,6 +57,7 @@ import {
   LOCAL_REST_API_LOADED_EVENT,
   type LocalRestApi,
   mountCommentsApi,
+  registerCommentEvents,
   REQUIRED_API_VERSION,
 } from "./rest-api";
 import { type CommentsBackend, CommentsApi } from "./rest-comments";
@@ -70,7 +72,7 @@ import {
   suggestionFailureMessage,
   VIEW_TYPE_SIDEMARK,
 } from "./sidebar";
-import { type RenameOutcome, SidecarStore } from "./store";
+import { type RenameOutcome, SidecarStore, type StoreChange } from "./store";
 import { suggestionEdit } from "./suggestion-edit";
 import { migrateTandemComments } from "./tandem-runner";
 import { VaultSidecarIO } from "./vault-io";
@@ -98,6 +100,10 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
   private readonly saveReadStateSoon = debounce(() => void this.saveAll(), 2000, true);
   /** Sidemark's registration with Local REST API, while there is one. */
   private restApi: LocalRestApi | null = null;
+  /** Comment events, triggered with the event type and its payload; see comment-events.ts. */
+  private readonly commentEvents = new Events();
+  /** Whether Local REST API is streaming `commentEvents`, so changes are worth comparing. */
+  private streamingCommentEvents = false;
 
   async onload(): Promise<void> {
     const data: unknown = await this.loadData();
@@ -108,6 +114,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     // so its start time stays put across reloads.
     if (!hasBaseline(storedReadState)) await this.saveAll();
     this.store = new SidecarStore(new VaultSidecarIO(this.app));
+    this.store.onChange((change) => this.announceCommentChanges(change));
     this.applyHighlightAppearance();
 
     this.registerHoverLinkSource(this.manifest.id, { display: this.manifest.name, defaultMod: false });
@@ -724,7 +731,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
 
   // ── Local REST API ────────────────────────────────────────
 
-  /** Adds the comments sub-resource to Local REST API when a new enough version is running. */
+  /** Adds the comments sub-resource and comment events to Local REST API when a new enough version is running. */
   private connectRestApi(): void {
     this.disconnectRestApi();
     try {
@@ -736,8 +743,10 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       }
       if (connection.kind !== "connected") return;
       this.restApi = connection.api;
-      if (typeof connection.api.addVaultSubresource !== "function") return;
-      mountCommentsApi(connection.api.addVaultSubresource(COMMENTS_SUBRESOURCE), new CommentsApi(this.commentsBackend()));
+      if (typeof connection.api.addVaultSubresource === "function") {
+        mountCommentsApi(connection.api.addVaultSubresource(COMMENTS_SUBRESOURCE), new CommentsApi(this.commentsBackend()));
+      }
+      this.streamingCommentEvents = registerCommentEvents(connection.api, this.commentEvents);
     } catch (e) {
       console.error("Sidemark: couldn't register with Local REST API", e);
       this.disconnectRestApi();
@@ -747,11 +756,20 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
   private disconnectRestApi(): void {
     const api = this.restApi;
     this.restApi = null;
+    this.streamingCommentEvents = false;
     try {
       api?.unregister();
     } catch (e) {
       // A host that has unloaded may no longer accept this; its registrations went with it.
       console.warn("Sidemark: unregistering from Local REST API failed", e);
+    }
+  }
+
+  /** Announces what a store change did to comments, while Local REST API is streaming them. */
+  private announceCommentChanges(change: StoreChange): void {
+    if (!this.streamingCommentEvents || !change.comments) return;
+    for (const event of diffComments(change.notePath, change.comments.before, change.comments.after)) {
+      this.commentEvents.trigger(event.type, event.payload);
     }
   }
 
