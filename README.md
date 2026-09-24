@@ -130,6 +130,27 @@ Anything these tools write shows up in Obsidian immediately.
 
 For Claude Code, open **Settings → Sidemark → Claude Code** and use **Install skill**. It writes a ready-made skill to `~/.claude/skills/sidemark-comments/SKILL.md` that teaches Claude the sidecar format and this plugin's conventions — anchoring, threads, suggestions, and what to leave alone. Desktop only, since the skill is written outside the vault, and it replaces whatever is already at that path.
 
+### Over Local REST API
+
+When [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api) is installed (extension API version 3 or later), Sidemark adds a `comments` sub-resource to every note, at `/vault/<note>/comments/` and `/active/comments/`. Requests need the API key, bodies are JSON, and changes show up in the sidebar immediately.
+
+| Request | Does |
+|---|---|
+| `GET …/comments/` | Lists the note's threads: each thread's root, its replies, and where its passage is now (`anchor`). `?resolved=false` or `?resolved=true` filters them. |
+| `GET …/comments/<id>` | Returns the comment and the thread it belongs to. |
+| `POST …/comments/` | Adds a comment. `{"text": "…", "quote": "…"}` anchors it on the passage `quote`; when the quote appears more than once, add `"occurrence": 2` (counting from 1) to choose one. `"author"` sets the author; otherwise it's your author name in Sidemark. |
+| `POST …/comments/<id>/replies` | Adds a reply: `{"text": "…", "author": "…"}`. |
+| `PATCH …/comments/<id>` | `{"text": "…"}` edits the comment; add `"expected_text"` to have the edit refused (409) if someone changed it first. `{"resolved": true}` resolves the thread and `false` reopens it. |
+| `DELETE …/comments/<id>` | Deletes a thread's first comment together with the thread, or a single reply. |
+
+```sh
+curl -k -X POST -H "Authorization: Bearer <api key>" -H "Content-Type: application/json" \
+  --data '{"text": "Consider a table here", "quote": "the three options", "author": "Claude"}' \
+  "https://127.0.0.1:27124/vault/Projects/Plan.md/comments/"
+```
+
+Suggested edits are listed with the other threads but can only be accepted or declined in Obsidian, since that edits the note. A comment file Sidemark can't parse is never written to; requests for its note answer 409 with the parse error.
+
 ## Limitations
 
 - No highlights in Reading view; comments are shown in the sidebar and in the editor (Live Preview and Source mode).
