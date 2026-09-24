@@ -237,6 +237,13 @@
   border-radius: 4px;
 }
 
+/* Obsidian makes interface text unselectable; an open thread's comments can
+   be selected so they can be quoted. A collapsed card stays a click target. */
+.sm-card.sm-expanded .sm-text {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 .sm-text-editable:hover {
   background: var(--background-modifier-hover);
 }
