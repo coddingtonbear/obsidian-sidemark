@@ -2,6 +2,7 @@ import { newCommentId } from "@mrsf/cli/browser";
 import {
   debounce,
   type Editor,
+  type Events,
   MarkdownView,
   Notice,
   normalizePath,
@@ -49,6 +50,15 @@ import {
   hasBaseline,
   sameReadState,
 } from "./read-state";
+import {
+  COMMENTS_SUBRESOURCE,
+  connectLocalRestApi,
+  LOCAL_REST_API_LOADED_EVENT,
+  type LocalRestApi,
+  mountCommentsApi,
+  REQUIRED_API_VERSION,
+} from "./rest-api";
+import { type CommentsBackend, CommentsApi } from "./rest-comments";
 import { SidemarkSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, parseSettings, settingsEffects, type SidemarkSettings } from "./settings-model";
 import { notePathFor } from "./sidecar-path";
@@ -86,6 +96,8 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
   private readonly trackers = new Set<AnchorTracker>();
   /** Read state changes with every thread opened, so its saves are batched. */
   private readonly saveReadStateSoon = debounce(() => void this.saveAll(), 2000, true);
+  /** Sidemark's registration with Local REST API, while there is one. */
+  private restApi: LocalRestApi | null = null;
 
   async onload(): Promise<void> {
     const data: unknown = await this.loadData();
@@ -216,10 +228,15 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       this.registerEvent(this.app.vault.on("create", (file) => this.onFileChanged(file)));
       this.registerEvent(this.app.vault.on("delete", (file) => this.onFileDeleted(file)));
       this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.onFileRenamed(file, oldPath)));
+      this.connectRestApi();
+      // The host may load (or reload, dropping every registration) after Sidemark.
+      const workspaceEvents: Events = this.app.workspace;
+      this.registerEvent(workspaceEvents.on(LOCAL_REST_API_LOADED_EVENT, () => this.connectRestApi()));
     });
   }
 
   onunload(): void {
+    this.disconnectRestApi();
     this.saveReadStateSoon.run();
     for (const doc of this.allDocuments()) {
       doc.body.style.removeProperty("--sm-highlight-color");
@@ -703,6 +720,55 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
 
   async migrateTandem(): Promise<void> {
     await migrateTandemComments(this);
+  }
+
+  // ── Local REST API ────────────────────────────────────────
+
+  /** Adds the comments sub-resource to Local REST API when a new enough version is running. */
+  private connectRestApi(): void {
+    this.disconnectRestApi();
+    try {
+      const connection = connectLocalRestApi(this.app, this.manifest);
+      if (connection.kind === "unsupported") {
+        console.info(
+          `Sidemark: Local REST API implements extension API version ${connection.version}; comments over REST need version ${REQUIRED_API_VERSION}.`
+        );
+      }
+      if (connection.kind !== "connected") return;
+      this.restApi = connection.api;
+      if (typeof connection.api.addVaultSubresource !== "function") return;
+      mountCommentsApi(connection.api.addVaultSubresource(COMMENTS_SUBRESOURCE), new CommentsApi(this.commentsBackend()));
+    } catch (e) {
+      console.error("Sidemark: couldn't register with Local REST API", e);
+      this.disconnectRestApi();
+    }
+  }
+
+  private disconnectRestApi(): void {
+    const api = this.restApi;
+    this.restApi = null;
+    try {
+      api?.unregister();
+    } catch (e) {
+      // A host that has unloaded may no longer accept this; its registrations went with it.
+      console.warn("Sidemark: unregistering from Local REST API failed", e);
+    }
+  }
+
+  private commentsBackend(): CommentsBackend {
+    const fileAt = (notePath: string): TFile => {
+      const file = this.app.vault.getFileByPath(notePath);
+      if (!file) throw new Error(`No note at ${notePath}`);
+      return file;
+    };
+    return {
+      load: (notePath) => this.store.load(notePath),
+      // Changes over REST come from outside the plugin's own UI.
+      update: (notePath, mutate) => this.store.update(notePath, mutate, "external"),
+      noteText: (notePath) => this.noteText(fileAt(notePath)),
+      resolveThreads: (notePath) => this.resolveThreads(fileAt(notePath)),
+      newEntry: (text, author) => ({ ...this.newEntry(text), ...(author === undefined ? {} : { author }) }),
+    };
   }
 
   // ── Keeping sidecars with their notes ─────────────────────
