@@ -1,4 +1,5 @@
 import type { App, PluginManifest } from "obsidian";
+import type { ZodTypeAny } from "zod";
 import type { ApiResult, CommentsApi } from "./rest-comments";
 
 /**
@@ -16,7 +17,7 @@ export const LOCAL_REST_API_PLUGIN_ID = "obsidian-local-rest-api";
 /** The event the host triggers on the workspace when it has (re)loaded. */
 export const LOCAL_REST_API_LOADED_EVENT = "obsidian-local-rest-api:loaded";
 
-/** The extension API version that added vault sub-resources and streamable events. */
+/** The extension API version that added vault sub-resources, streamable events, and MCP tools returning full results. */
 export const REQUIRED_API_VERSION = 3;
 
 /** The sub-resource name: `/vault/<note>/comments/…` and `/active/comments/…`. */
@@ -49,11 +50,46 @@ export interface SubresourceRouter {
   delete(path: string, handler: RouteHandler): unknown;
 }
 
+/** A text block of an MCP tool result; the only content Sidemark's tools return. */
+export interface McpTextContent {
+  type: "text";
+  text: string;
+}
+
+/** An MCP tool call's result, handed to the client as-is. */
+export interface McpToolResult {
+  content: McpTextContent[];
+  /** A failure the model should see and may recover from. */
+  isError?: boolean;
+}
+
+export interface McpToolAnnotations {
+  title?: string;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
+/**
+ * The object form of the host's `addMcpTool`. The host builds the tool's schema
+ * with its own zod 3, so `inputSchema` must be zod 3 schemas too.
+ */
+export interface McpToolDefinition {
+  name: string;
+  title?: string;
+  description: string;
+  inputSchema?: Record<string, ZodTypeAny>;
+  annotations?: McpToolAnnotations;
+  callback: (args: Record<string, unknown>) => Promise<McpToolResult>;
+}
+
 /** The members of the host's `LocalRestApiPublicApi` Sidemark uses. */
 export interface LocalRestApi {
   /** Missing on hosts older than version 2, which implement version 1. */
   readonly apiVersion?: number;
   addVaultSubresource?(name: string): SubresourceRouter;
+  addMcpTool?(definition: McpToolDefinition): void;
   unregister(): void;
 }
 

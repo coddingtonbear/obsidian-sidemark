@@ -17,6 +17,7 @@ import { confirmAction } from "./confirm-action";
 import { type AnchorTracker, buildEditorExtension, type EditorHost, trackerOnNote } from "./editor-extension";
 import { buildExportNote, type ResolvedThread } from "./export";
 import { selectedTextHash } from "./hash";
+import { commentTools } from "./mcp-comments";
 import {
   buildThreads,
   type Comment,
@@ -736,8 +737,13 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       }
       if (connection.kind !== "connected") return;
       this.restApi = connection.api;
-      if (typeof connection.api.addVaultSubresource !== "function") return;
-      mountCommentsApi(connection.api.addVaultSubresource(COMMENTS_SUBRESOURCE), new CommentsApi(this.commentsBackend()));
+      const comments = new CommentsApi(this.commentsBackend());
+      if (typeof connection.api.addVaultSubresource === "function") {
+        mountCommentsApi(connection.api.addVaultSubresource(COMMENTS_SUBRESOURCE), comments);
+      }
+      if (typeof connection.api.addMcpTool === "function") {
+        for (const tool of commentTools(comments, (path) => this.markdownNoteAt(path))) connection.api.addMcpTool(tool);
+      }
     } catch (e) {
       console.error("Sidemark: couldn't register with Local REST API", e);
       this.disconnectRestApi();
@@ -753,6 +759,12 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       // A host that has unloaded may no longer accept this; its registrations went with it.
       console.warn("Sidemark: unregistering from Local REST API failed", e);
     }
+  }
+
+  /** The vault path of the Markdown note at `path`, or null when there's none. */
+  private markdownNoteAt(path: string): string | null {
+    const file = this.app.vault.getFileByPath(normalizePath(path));
+    return file?.extension === "md" ? file.path : null;
   }
 
   private commentsBackend(): CommentsBackend {
