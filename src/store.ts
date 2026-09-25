@@ -27,6 +27,17 @@ export type ChangeOrigin = "local" | "tracking" | "external";
 export interface StoreChange {
   notePath: string;
   origin: ChangeOrigin;
+  /**
+   * The note's comments before and after the change, when both are known:
+   * absent when either side couldn't be parsed, or when an outside change
+   * reached a note whose comments hadn't been loaded yet.
+   */
+  comments?: { before: MrsfDocument; after: MrsfDocument };
+}
+
+/** The last readable comments the store knew for a note, to compare a change against. */
+function baseline(state: SidecarState | undefined): MrsfDocument | undefined {
+  return state && !state.error ? state.doc : undefined;
 }
 
 export interface SidecarState {
@@ -119,6 +130,10 @@ export class SidecarStore {
         return { ok: false, error: state.error } as const;
       }
       const doc = state.doc;
+      // Compared against what was last known rather than what was just read, so
+      // an outside change this write takes in (before its modify event arrives,
+      // which then matches this write and is ignored) is still reported.
+      const before = baseline(this.cache.get(notePath)) ?? structuredClone(doc);
       const value = mutate(doc);
       doc.document = notePath;
       if (doc.comments.length === 0) {
@@ -134,7 +149,7 @@ export class SidecarStore {
         }
       }
       this.cache.set(notePath, { doc });
-      this.emit({ notePath, origin });
+      this.emit({ notePath, origin, comments: { before, after: doc } });
       return { ok: true, value } as const;
     });
   }
@@ -150,8 +165,11 @@ export class SidecarStore {
       if (this.written.has(path) && this.written.get(path) === raw) return;
       this.written.delete(path);
       if (!this.cache.has(notePath) && raw === null) return;
-      this.cache.set(notePath, parse(notePath, raw));
-      this.emit({ notePath, origin: "external" });
+      const before = baseline(this.cache.get(notePath));
+      const state = parse(notePath, raw);
+      this.cache.set(notePath, state);
+      const after = baseline(state);
+      this.emit({ notePath, origin: "external", ...(before && after ? { comments: { before, after } } : {}) });
     });
   }
 

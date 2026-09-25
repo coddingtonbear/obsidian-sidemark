@@ -1,9 +1,13 @@
 import type { App, PluginManifest } from "obsidian";
 import { describe, expect, it, vi } from "vitest";
+import { COMMENT_EVENT_TYPES } from "../src/comment-events";
 import {
   connectLocalRestApi,
+  type EventSource,
   type LocalRestApi,
   mountCommentsApi,
+  registerCommentEvents,
+  type StreamableEventDefinition,
   type SubresourceRequest,
   type SubresourceResponse,
   type SubresourceRouter,
@@ -47,6 +51,35 @@ describe("connectLocalRestApi", () => {
       version: reported,
     });
     expect(api.unregister).toHaveBeenCalledOnce();
+  });
+});
+
+describe("registerCommentEvents", () => {
+  const source: EventSource = { on: () => undefined, off: () => undefined };
+
+  it("registers every comment event, serializing only real payloads", async () => {
+    const added: [string, StreamableEventDefinition][] = [];
+    const api: LocalRestApi = {
+      apiVersion: 3,
+      unregister: () => undefined,
+      addStreamableEvent(event, definition) {
+        // A method, as on the host, so a detached call would lose `this`.
+        expect(this).toBe(api);
+        added.push([event, definition]);
+      },
+    };
+    expect(registerCommentEvents(api, source)).toBe(true);
+    expect(added.map(([event]) => event)).toEqual([...COMMENT_EVENT_TYPES]);
+    const { serialize, source: registered } = added[0][1];
+    expect(registered).toBe(source);
+    const payload = { path: "a.md", id: "c1", thread: "c1", author: "Adam", timestamp: "t", text: "hi" };
+    expect(await serialize(payload)).toEqual(payload);
+    expect(await serialize(payload)).not.toBe(payload);
+    expect(await serialize({ path: "a.md" })).toBeNull();
+  });
+
+  it("registers nothing on a host that can't stream extension events", () => {
+    expect(registerCommentEvents({ apiVersion: 3, unregister: () => undefined }, source)).toBe(false);
   });
 });
 

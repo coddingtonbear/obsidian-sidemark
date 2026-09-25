@@ -151,6 +151,8 @@ curl -k -X POST -H "Authorization: Bearer <api key>" -H "Content-Type: applicati
 
 Suggested edits are listed with the other threads but can only be accepted or declined in Obsidian, since that edits the note. A comment file Sidemark can't parse is never written to; requests for its note answer 409 with the parse error. Only Markdown notes have comments; the routes answer 404 for any other file.
 
+Sidemark also adds comment events to Local REST API's [event streams](https://github.com/coddingtonbear/obsidian-local-rest-api#event-streams): `comment-added`, `comment-edited`, `comment-resolved`, `comment-reopened`, and `comment-deleted`, subscribed to at `POST /events/sidemark/<event>/`. Each sends the note's `path`, the comment's `id`, its `thread` (the id of the thread's first comment), and the comment's `author`, `timestamp`, and `text` (left out when it's deleted). A thread's resolving is reported once, for its first comment. Events come from comparing a note's comments before and after each change, so comments that arrive by sync, from the `mrsf` CLI, or from an edit to the YAML are reported too, as long as Sidemark had already read that note's comments; the first outside change to a note it hasn't read yet isn't.
+
 ## Limitations
 
 - No highlights in Reading view; comments are shown in the sidebar and in the editor (Live Preview and Source mode).
