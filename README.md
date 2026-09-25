@@ -151,6 +151,19 @@ curl -k -X POST -H "Authorization: Bearer <api key>" -H "Content-Type: applicati
 
 Suggested edits are listed with the other threads but can only be accepted or declined in Obsidian, since that edits the note. A comment file Sidemark can't parse is never written to; requests for its note answer 409 with the parse error. Only Markdown notes have comments; the routes answer 404 for any other file.
 
+The same operations are MCP tools on Local REST API's MCP server, for assistants connected to it. Each takes the note's vault path as `path`; the rest of the arguments and the results are the REST API's.
+
+| Tool | Does |
+|---|---|
+| `comments_list` | `GET …/comments/`, with `resolved: true` or `false` to filter. |
+| `comments_get` | `GET …/comments/<id>` |
+| `comments_add` | `POST …/comments/` |
+| `comments_reply` | `POST …/comments/<id>/replies` |
+| `comments_update` | `PATCH …/comments/<id>` |
+| `comments_delete` | `DELETE …/comments/<id>` |
+
+A request the REST API would refuse comes back as a tool error carrying the same error body, so an assistant can correct it — pick an `occurrence`, say, or re-read a comment that changed.
+
 ## Limitations
 
 - No highlights in Reading view; comments are shown in the sidebar and in the editor (Live Preview and Source mode).

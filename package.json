@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@mrsf/cli": "0.7.1",
-    "yaml": "2.9.1"
+    "yaml": "2.9.1",
+    "zod": "3.25.76"
   },
   "devDependencies": {
     "@codemirror/state": "^6.5.0",
