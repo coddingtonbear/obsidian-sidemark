@@ -149,7 +149,7 @@ curl -k -X POST -H "Authorization: Bearer <api key>" -H "Content-Type: applicati
   "https://127.0.0.1:27124/vault/Projects/Plan.md/comments/"
 ```
 
-Suggested edits are listed with the other threads but can only be accepted or declined in Obsidian, since that edits the note. A comment file Sidemark can't parse is never written to; requests for its note answer 409 with the parse error.
+Suggested edits are listed with the other threads but can only be accepted or declined in Obsidian, since that edits the note. A comment file Sidemark can't parse is never written to; requests for its note answer 409 with the parse error. Only Markdown notes have comments; the routes answer 404 for any other file.
 
 ## Limitations
 
