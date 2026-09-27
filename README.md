@@ -168,7 +168,7 @@ A request the REST API would refuse comes back as a tool error carrying the same
 
 - No highlights in Reading view; comments are shown in the sidebar and in the editor (Live Preview and Source mode).
 - The positions of resolved threads aren't updated while you type. They are found again from their text when reopened.
-- There is no runtime schema validation (it would double the bundle size); use `mrsf validate` for strict checks.
+- Comment files aren't checked against the MRSF schema when they're read; use `mrsf validate` for strict checks. (The MCP tools do check their own arguments, since Local REST API's MCP server takes zod schemas for them.)
 - Sidecars are always stored next to their notes; MRSF's `sidecar_root` setting isn't supported yet.
 
 ## Development

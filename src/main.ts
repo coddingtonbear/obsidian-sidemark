@@ -52,6 +52,7 @@ import {
   sameReadState,
 } from "./read-state";
 import {
+  addMcpTools,
   COMMENTS_SUBRESOURCE,
   connectLocalRestApi,
   LOCAL_REST_API_LOADED_EVENT,
@@ -741,9 +742,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       if (typeof connection.api.addVaultSubresource === "function") {
         mountCommentsApi(connection.api.addVaultSubresource(COMMENTS_SUBRESOURCE), comments);
       }
-      if (typeof connection.api.addMcpTool === "function") {
-        for (const tool of commentTools(comments, (path) => this.markdownNoteAt(path))) connection.api.addMcpTool(tool);
-      }
+      addMcpTools(connection.api, commentTools(comments, (path) => this.markdownNoteAt(path)));
     } catch (e) {
       console.error("Sidemark: couldn't register with Local REST API", e);
       this.disconnectRestApi();

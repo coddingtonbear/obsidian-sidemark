@@ -149,6 +149,22 @@ function route(handle: (req: SubresourceRequest) => Promise<ApiResult>): RouteHa
   };
 }
 
+/**
+ * Offers each tool to the host's MCP server. A tool the host refuses (say, a
+ * name another plugin already took) is logged and skipped, so it takes down
+ * neither the other tools nor the REST routes registered on the same handle.
+ */
+export function addMcpTools(api: LocalRestApi, tools: McpToolDefinition[]): void {
+  if (typeof api.addMcpTool !== "function") return;
+  for (const tool of tools) {
+    try {
+      api.addMcpTool(tool);
+    } catch (e) {
+      console.error(`Sidemark: Local REST API refused the MCP tool ${tool.name}`, e);
+    }
+  }
+}
+
 /** Adds the comment routes to the host's router for the comments sub-resource. */
 export function mountCommentsApi(router: SubresourceRouter, comments: CommentsApi): void {
   router.get("/", route((req) => comments.list(req.vaultFile.path, req.query)));
