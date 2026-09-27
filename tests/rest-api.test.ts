@@ -4,6 +4,7 @@ import { COMMENT_EVENT_TYPES } from "../src/comment-events";
 import {
   addMcpTools,
   connectLocalRestApi,
+  describeInOpenApi,
   type EventSource,
   type LocalRestApi,
   type McpToolDefinition,
@@ -112,6 +113,43 @@ describe("addMcpTools", () => {
 
   it("does nothing on a host without MCP tools", () => {
     expect(() => addMcpTools({ apiVersion: 3, unregister: vi.fn() }, [tool("comments_list")])).not.toThrow();
+  });
+});
+
+describe("describeInOpenApi", () => {
+  const description = { tags: [{ name: "Sidemark Comments" }] };
+
+  it("hands the description to the host", () => {
+    const added: unknown[] = [];
+    const api: LocalRestApi = {
+      apiVersion: 3,
+      unregister: vi.fn(),
+      addOpenApiDescription(given) {
+        expect(this).toBe(api);
+        added.push(given);
+      },
+    };
+    expect(describeInOpenApi(api, description)).toBe(true);
+    expect(added).toEqual([description]);
+  });
+
+  it("logs a description the host refuses, without unregistering", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const api: LocalRestApi = {
+      apiVersion: 3,
+      unregister: vi.fn(),
+      addOpenApiDescription: () => {
+        throw new Error('OpenAPI tag "Sidemark Comments" is already declared.');
+      },
+    };
+    expect(describeInOpenApi(api, description)).toBe(false);
+    expect(api.unregister).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledOnce();
+    error.mockRestore();
+  });
+
+  it("does nothing on a host that can't take descriptions", () => {
+    expect(describeInOpenApi({ apiVersion: 3, unregister: vi.fn() }, description)).toBe(false);
   });
 });
 

@@ -56,12 +56,14 @@ import {
   addMcpTools,
   COMMENTS_SUBRESOURCE,
   connectLocalRestApi,
+  describeInOpenApi,
   LOCAL_REST_API_LOADED_EVENT,
   type LocalRestApi,
   mountCommentsApi,
   registerCommentEvents,
   REQUIRED_API_VERSION,
 } from "./rest-api";
+import { commentsOpenApiDescription } from "./openapi";
 import { type CommentsBackend, CommentsApi } from "./rest-comments";
 import { SidemarkSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, parseSettings, settingsEffects, type SidemarkSettings } from "./settings-model";
@@ -748,6 +750,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       const comments = new CommentsApi(this.commentsBackend());
       if (typeof connection.api.addVaultSubresource === "function") {
         mountCommentsApi(connection.api.addVaultSubresource(COMMENTS_SUBRESOURCE), comments);
+        describeInOpenApi(connection.api, commentsOpenApiDescription(this.manifest.id));
       }
       addMcpTools(connection.api, commentTools(comments, (path) => this.markdownNoteAt(path)));
       this.streamingCommentEvents = registerCommentEvents(connection.api, this.commentEvents);
