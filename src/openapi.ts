@@ -134,8 +134,10 @@ function refusal(description: string, extra?: Record<string, OpenApiObject>): Op
 
 const code = (errorCode: number) => `\`${errorCode}\``;
 
-const NOT_FOUND_NOTE = `The note doesn't exist, or it isn't a Markdown note (${code(ErrorCodes.notANote)}).`;
-const NOT_FOUND_COMMENT = `${NOT_FOUND_NOTE.slice(0, -1)}, or has no comment with this id (${code(ErrorCodes.unknownComment)}).`;
+/** The host answers for a file that doesn't exist, before the request reaches Sidemark. */
+const MISSING_FILE = "A file that doesn't exist gets Local REST API's own 404.";
+const NOT_FOUND_NOTE = `The file isn't a Markdown note (${code(ErrorCodes.notANote)}). ${MISSING_FILE}`;
+const NOT_FOUND_COMMENT = `The file isn't a Markdown note (${code(ErrorCodes.notANote)}), or the note has no comment with this id (${code(ErrorCodes.unknownComment)}). ${MISSING_FILE}`;
 const UNREADABLE = `The note's comment file can't be parsed (${code(ErrorCodes.unreadableSidecar)}), so it's left untouched; \`message\` carries the parse error.`;
 const INVALID_BODY = `The body isn't a JSON object, or a field is missing or of the wrong type (${code(ErrorCodes.invalidBody)}).`;
 
