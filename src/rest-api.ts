@@ -1,6 +1,7 @@
 import type { App, PluginManifest } from "obsidian";
 import type { ZodTypeAny } from "zod";
 import { COMMENT_EVENT_TYPES, isCommentEventPayload } from "./comment-events";
+import type { OpenApiDescription } from "./openapi";
 import type { ApiResult, CommentsApi } from "./rest-comments";
 
 /**
@@ -105,6 +106,7 @@ export interface LocalRestApi {
   addVaultSubresource?(name: string): SubresourceRouter;
   addStreamableEvent?(event: string, definition: StreamableEventDefinition): void;
   addMcpTool?(definition: McpToolDefinition): void;
+  addOpenApiDescription?(description: OpenApiDescription): void;
   unregister(): void;
 }
 
@@ -193,6 +195,22 @@ export function addMcpTools(api: LocalRestApi, tools: McpToolDefinition[]): void
     } catch (e) {
       console.error(`Sidemark: Local REST API refused the MCP tool ${tool.name}`, e);
     }
+  }
+}
+
+/**
+ * Documents Sidemark's routes in the spec the host publishes. A description the
+ * host refuses (say, a path or tag another plugin already described) is logged
+ * and left out, so the routes it describes keep working undocumented.
+ */
+export function describeInOpenApi(api: LocalRestApi, description: OpenApiDescription): boolean {
+  if (typeof api.addOpenApiDescription !== "function") return false;
+  try {
+    api.addOpenApiDescription(description);
+    return true;
+  } catch (e) {
+    console.error("Sidemark: Local REST API refused the OpenAPI description", e);
+    return false;
   }
 }
 
