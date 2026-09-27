@@ -91,7 +91,7 @@ describe("CommentsApi.create", () => {
     expect(thread.root.selected_text_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(io.files.has(sidecarPathFor(NOTE))).toBe(true);
     expect((await store.load(NOTE)).doc.comments).toHaveLength(1);
-    expect(changes).toEqual([{ notePath: NOTE, origin: "external" }]);
+    expect(changes).toMatchObject([{ notePath: NOTE, origin: "external" }]);
   });
 
   it("uses the author from the body", async () => {

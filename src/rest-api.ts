@@ -1,5 +1,6 @@
 import type { App, PluginManifest } from "obsidian";
 import type { ZodTypeAny } from "zod";
+import { COMMENT_EVENT_TYPES, isCommentEventPayload } from "./comment-events";
 import type { ApiResult, CommentsApi } from "./rest-comments";
 
 /**
@@ -50,6 +51,19 @@ export interface SubresourceRouter {
   delete(path: string, handler: RouteHandler): unknown;
 }
 
+/** An `Events`-like object: Obsidian's `Events`, or anything with the same `on`/`off`. */
+export interface EventSource {
+  on(name: string, callback: (...data: unknown[]) => unknown): unknown;
+  off(name: string, callback: (...data: unknown[]) => unknown): void;
+}
+
+/** The host's `StreamableEventDefinition`. */
+export interface StreamableEventDefinition {
+  source: EventSource;
+  /** What a stream sends for one occurrence; null sends nothing. */
+  serialize(...args: unknown[]): Record<string, unknown> | null | Promise<Record<string, unknown> | null>;
+}
+
 /** A text block of an MCP tool result; the only content Sidemark's tools return. */
 export interface McpTextContent {
   type: "text";
@@ -89,6 +103,7 @@ export interface LocalRestApi {
   /** Missing on hosts older than version 2, which implement version 1. */
   readonly apiVersion?: number;
   addVaultSubresource?(name: string): SubresourceRouter;
+  addStreamableEvent?(event: string, definition: StreamableEventDefinition): void;
   addMcpTool?(definition: McpToolDefinition): void;
   unregister(): void;
 }
@@ -147,6 +162,22 @@ function route(handle: (req: SubresourceRequest) => Promise<ApiResult>): RouteHa
       }
     );
   };
+}
+
+/**
+ * Makes each comment event streamable (`POST /events/<Sidemark's id>/comment-added/`
+ * and so on). `source` is triggered with the event type and its payload.
+ * Returns false, registering nothing, when the host can't stream extension events.
+ */
+export function registerCommentEvents(api: LocalRestApi, source: EventSource): boolean {
+  if (typeof api.addStreamableEvent !== "function") return false;
+  for (const type of COMMENT_EVENT_TYPES) {
+    api.addStreamableEvent(type, {
+      source,
+      serialize: (payload) => (isCommentEventPayload(payload) ? { ...payload } : null),
+    });
+  }
+  return true;
 }
 
 /**
