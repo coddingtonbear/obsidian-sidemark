@@ -768,7 +768,8 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
   /** Announces what a store change did to comments, while Local REST API is streaming them. */
   private announceCommentChanges(change: StoreChange): void {
     if (!this.streamingCommentEvents || !change.comments) return;
-    for (const event of diffComments(change.notePath, change.comments.before, change.comments.after)) {
+    const { before, after } = change.comments();
+    for (const event of diffComments(change.notePath, before, after)) {
       this.commentEvents.trigger(event.type, event.payload);
     }
   }

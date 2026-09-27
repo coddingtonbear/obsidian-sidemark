@@ -108,7 +108,13 @@ function setup() {
   const store = new SidecarStore(io);
   const changes: StoreChange[] = [];
   store.onChange((c) => changes.push(c));
-  const events = () => changes.flatMap((c) => (c.comments ? kinds(diffComments(c.notePath, c.comments.before, c.comments.after)) : []));
+  // Compared only after the fact, so the comparison can't rely on being read while the change happens.
+  const events = () =>
+    changes.flatMap((c) => {
+      if (!c.comments) return [];
+      const { before, after } = c.comments();
+      return kinds(diffComments(c.notePath, before, after));
+    });
   const writeOutside = (d: MrsfDocument) => io.files.set(sidecarPathFor(NOTE), serializeSidecar(null, d));
   return { io, store, changes, events, writeOutside };
 }
@@ -121,6 +127,17 @@ describe("SidecarStore changes as comment events", () => {
     expect(events()).toEqual([
       ["comment-added", "a", "a"],
       ["comment-added", "b", "a"],
+    ]);
+  });
+
+  it("reports only what a first write to a note never loaded changed", async () => {
+    const { store, events, writeOutside } = setup();
+    writeOutside(doc(comment("a")));
+    await store.update(NOTE, (d) => d.comments.push(comment("b")));
+    await store.update(NOTE, (d) => d.comments.push(comment("c")));
+    expect(events()).toEqual([
+      ["comment-added", "b", "b"],
+      ["comment-added", "c", "c"],
     ]);
   });
 
