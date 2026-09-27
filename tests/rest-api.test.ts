@@ -1,8 +1,10 @@
 import type { App, PluginManifest } from "obsidian";
 import { describe, expect, it, vi } from "vitest";
 import {
+  addMcpTools,
   connectLocalRestApi,
   type LocalRestApi,
+  type McpToolDefinition,
   mountCommentsApi,
   type SubresourceRequest,
   type SubresourceResponse,
@@ -47,6 +49,36 @@ describe("connectLocalRestApi", () => {
       version: reported,
     });
     expect(api.unregister).toHaveBeenCalledOnce();
+  });
+});
+
+describe("addMcpTools", () => {
+  const tool = (name: string): McpToolDefinition => ({
+    name,
+    description: name,
+    callback: () => Promise.resolve({ content: [] }),
+  });
+
+  it("skips a tool the host refuses and still offers the rest, without unregistering", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const added: string[] = [];
+    const api: LocalRestApi = {
+      apiVersion: 3,
+      unregister: vi.fn(),
+      addMcpTool: (definition) => {
+        if (definition.name === "comments_list") throw new Error("Tool comments_list is already registered");
+        added.push(definition.name);
+      },
+    };
+    addMcpTools(api, [tool("comments_get"), tool("comments_list"), tool("comments_add")]);
+    expect(added).toEqual(["comments_get", "comments_add"]);
+    expect(api.unregister).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledOnce();
+    error.mockRestore();
+  });
+
+  it("does nothing on a host without MCP tools", () => {
+    expect(() => addMcpTools({ apiVersion: 3, unregister: vi.fn() }, [tool("comments_list")])).not.toThrow();
   });
 });
 
