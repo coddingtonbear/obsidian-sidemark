@@ -1,4 +1,5 @@
 import type { App, PluginManifest } from "obsidian";
+import type { ZodTypeAny } from "zod";
 import { COMMENT_EVENT_TYPES, isCommentEventPayload } from "./comment-events";
 import type { ApiResult, CommentsApi } from "./rest-comments";
 
@@ -17,7 +18,7 @@ export const LOCAL_REST_API_PLUGIN_ID = "obsidian-local-rest-api";
 /** The event the host triggers on the workspace when it has (re)loaded. */
 export const LOCAL_REST_API_LOADED_EVENT = "obsidian-local-rest-api:loaded";
 
-/** The extension API version that added vault sub-resources and streamable events. */
+/** The extension API version that added vault sub-resources, streamable events, and MCP tools returning full results. */
 export const REQUIRED_API_VERSION = 3;
 
 /** The sub-resource name: `/vault/<note>/comments/…` and `/active/comments/…`. */
@@ -63,12 +64,47 @@ export interface StreamableEventDefinition {
   serialize(...args: unknown[]): Record<string, unknown> | null | Promise<Record<string, unknown> | null>;
 }
 
+/** A text block of an MCP tool result; the only content Sidemark's tools return. */
+export interface McpTextContent {
+  type: "text";
+  text: string;
+}
+
+/** An MCP tool call's result, handed to the client as-is. */
+export interface McpToolResult {
+  content: McpTextContent[];
+  /** A failure the model should see and may recover from. */
+  isError?: boolean;
+}
+
+export interface McpToolAnnotations {
+  title?: string;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
+/**
+ * The object form of the host's `addMcpTool`. The host builds the tool's schema
+ * with its own zod 3, so `inputSchema` must be zod 3 schemas too.
+ */
+export interface McpToolDefinition {
+  name: string;
+  title?: string;
+  description: string;
+  inputSchema?: Record<string, ZodTypeAny>;
+  annotations?: McpToolAnnotations;
+  callback: (args: Record<string, unknown>) => Promise<McpToolResult>;
+}
+
 /** The members of the host's `LocalRestApiPublicApi` Sidemark uses. */
 export interface LocalRestApi {
   /** Missing on hosts older than version 2, which implement version 1. */
   readonly apiVersion?: number;
   addVaultSubresource?(name: string): SubresourceRouter;
   addStreamableEvent?(event: string, definition: StreamableEventDefinition): void;
+  addMcpTool?(definition: McpToolDefinition): void;
   unregister(): void;
 }
 
@@ -142,6 +178,22 @@ export function registerCommentEvents(api: LocalRestApi, source: EventSource): b
     });
   }
   return true;
+}
+
+/**
+ * Offers each tool to the host's MCP server. A tool the host refuses (say, a
+ * name another plugin already took) is logged and skipped, so it takes down
+ * neither the other tools nor the REST routes registered on the same handle.
+ */
+export function addMcpTools(api: LocalRestApi, tools: McpToolDefinition[]): void {
+  if (typeof api.addMcpTool !== "function") return;
+  for (const tool of tools) {
+    try {
+      api.addMcpTool(tool);
+    } catch (e) {
+      console.error(`Sidemark: Local REST API refused the MCP tool ${tool.name}`, e);
+    }
+  }
 }
 
 /** Adds the comment routes to the host's router for the comments sub-resource. */

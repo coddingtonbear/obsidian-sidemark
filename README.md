@@ -149,7 +149,20 @@ curl -k -X POST -H "Authorization: Bearer <api key>" -H "Content-Type: applicati
   "https://127.0.0.1:27124/vault/Projects/Plan.md/comments/"
 ```
 
-Suggested edits are listed with the other threads but can only be accepted or declined in Obsidian, since that edits the note. A comment file Sidemark can't parse is never written to; requests for its note answer 409 with the parse error.
+Suggested edits are listed with the other threads but can only be accepted or declined in Obsidian, since that edits the note. A comment file Sidemark can't parse is never written to; requests for its note answer 409 with the parse error. Only Markdown notes have comments; the routes answer 404 for any other file.
+
+The same operations are MCP tools on Local REST API's MCP server, for assistants connected to it. Each takes the note's vault path as `path`; the rest of the arguments and the results are the REST API's.
+
+| Tool | Does |
+|---|---|
+| `comments_list` | `GET …/comments/`, with `resolved: true` or `false` to filter. |
+| `comments_get` | `GET …/comments/<id>` |
+| `comments_add` | `POST …/comments/` |
+| `comments_reply` | `POST …/comments/<id>/replies` |
+| `comments_update` | `PATCH …/comments/<id>` |
+| `comments_delete` | `DELETE …/comments/<id>` |
+
+A request the REST API would refuse comes back as a tool error carrying the same error body, so an assistant can correct it — pick an `occurrence`, say, or re-read a comment that changed.
 
 Sidemark also adds comment events to Local REST API's [event streams](https://github.com/coddingtonbear/obsidian-local-rest-api#event-streams): `comment-added`, `comment-edited`, `comment-resolved`, `comment-reopened`, and `comment-deleted`, subscribed to at `POST /events/sidemark/<event>/`. Each sends the note's `path`, the comment's `id`, its `thread` (the id of the thread's first comment), and the comment's `author`, `timestamp`, and `text` (left out when it's deleted). A thread's resolving is reported once, for its first comment. Events come from comparing a note's comments before and after each change, so comments that arrive by sync, from the `mrsf` CLI, or from an edit to the YAML are reported too, as long as Sidemark had already read that note's comments; the first outside change to a note it hasn't read yet isn't.
 
@@ -157,7 +170,7 @@ Sidemark also adds comment events to Local REST API's [event streams](https://gi
 
 - No highlights in Reading view; comments are shown in the sidebar and in the editor (Live Preview and Source mode).
 - The positions of resolved threads aren't updated while you type. They are found again from their text when reopened.
-- There is no runtime schema validation (it would double the bundle size); use `mrsf validate` for strict checks.
+- Comment files aren't checked against the MRSF schema when they're read; use `mrsf validate` for strict checks. (The MCP tools do check their own arguments, since Local REST API's MCP server takes zod schemas for them.)
 - Sidecars are always stored next to their notes; MRSF's `sidecar_root` setting isn't supported yet.
 
 ## Development

@@ -75,6 +75,7 @@ export const ErrorCodes = {
   invalidBody: 40001,
   invalidQuery: 40002,
   unknownComment: 40401,
+  notANote: 40402,
   unreadableSidecar: 40901,
   ambiguousQuote: 40902,
   textConflict: 40903,
@@ -90,6 +91,15 @@ function error(errorCode: number, message: string, extra: Record<string, unknown
 const unreadable = (detail: string) =>
   error(ErrorCodes.unreadableSidecar, `The note's comment file can't be read, so it can't be used: ${detail}`);
 const unknown = (id: string) => error(ErrorCodes.unknownComment, `The note has no comment with the id "${id}".`);
+
+/**
+ * The rest of Sidemark only treats `.md` files as notes (see sidecar-path.ts),
+ * so a comment file for anything else would never show up in the sidebar.
+ */
+function notANote(notePath: string): ApiResult | null {
+  if (notePath.endsWith(".md")) return null;
+  return error(ErrorCodes.notANote, `Only Markdown notes have comments; "${notePath}" isn't one.`);
+}
 
 function anchorJson(text: string, resolution: Resolution): AnchorJson {
   if (resolution.kind === "orphaned") return { status: "orphaned" };
@@ -159,6 +169,8 @@ export class CommentsApi {
 
   /** `GET /` — the note's threads; `?resolved=true|false` filters them. */
   async list(notePath: string, query: Record<string, unknown>): Promise<ApiResult> {
+    const refused = notANote(notePath);
+    if (refused) return refused;
     const filter = query.resolved;
     if (filter !== undefined && filter !== "true" && filter !== "false") {
       return error(ErrorCodes.invalidQuery, '"resolved" must be "true" or "false".');
@@ -174,6 +186,8 @@ export class CommentsApi {
 
   /** `GET /<id>` — one comment and the whole thread it belongs to. */
   async get(notePath: string, id: string): Promise<ApiResult> {
+    const refused = notANote(notePath);
+    if (refused) return refused;
     const state = await this.backend.load(notePath);
     if (state.error) return unreadable(state.error);
     const comment = findComment(state.doc, id);
@@ -191,6 +205,8 @@ export class CommentsApi {
    * A quote found more than once needs an `occurrence`.
    */
   async create(notePath: string, rawBody: unknown): Promise<ApiResult> {
+    const refused = notANote(notePath);
+    if (refused) return refused;
     const body = objectBody(rawBody);
     if (!body.ok) return body.result;
     const text = requiredText(body.value, "text");
@@ -239,6 +255,8 @@ export class CommentsApi {
 
   /** `POST /<id>/replies` — a reply to the comment `id`. */
   async reply(notePath: string, id: string, rawBody: unknown): Promise<ApiResult> {
+    const refused = notANote(notePath);
+    if (refused) return refused;
     const body = objectBody(rawBody);
     if (!body.ok) return body.result;
     const text = requiredText(body.value, "text");
@@ -259,6 +277,8 @@ export class CommentsApi {
    * Obsidian, so `resolved` is refused on a suggestion's thread.
    */
   async patch(notePath: string, id: string, rawBody: unknown): Promise<ApiResult> {
+    const refused = notANote(notePath);
+    if (refused) return refused;
     const body = objectBody(rawBody);
     if (!body.ok) return body.result;
     const text = body.value.text === undefined ? { ok: true as const, value: undefined } : requiredText(body.value, "text");
@@ -301,6 +321,8 @@ export class CommentsApi {
 
   /** `DELETE /<id>` — a thread's root takes the whole thread with it; a reply goes alone. */
   async remove(notePath: string, id: string): Promise<ApiResult> {
+    const refused = notANote(notePath);
+    if (refused) return refused;
     const saved = await this.backend.update(notePath, (doc) => {
       const thread = threadOf(doc, id);
       if (!thread) return false;

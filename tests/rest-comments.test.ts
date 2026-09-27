@@ -271,3 +271,21 @@ describe("CommentsApi.remove", () => {
     expectError(await api.remove(NOTE, "nope"), ErrorCodes.unknownComment);
   });
 });
+
+describe("CommentsApi on a file that isn't a Markdown note", () => {
+  const IMAGE = "dir/image.png";
+
+  it("refuses every operation without reading or writing a comment file", async () => {
+    const { api, io } = setup();
+    const results = [
+      await api.list(IMAGE, {}),
+      await api.get(IMAGE, "c1"),
+      await api.create(IMAGE, { text: "Nice", quote: "brown fox" }),
+      await api.reply(IMAGE, "c1", { text: "Thanks" }),
+      await api.patch(IMAGE, "c1", { resolved: true }),
+      await api.remove(IMAGE, "c1"),
+    ];
+    for (const result of results) expectError(result, ErrorCodes.notANote);
+    expect(io.files.size).toBe(0);
+  });
+});
