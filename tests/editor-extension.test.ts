@@ -96,6 +96,8 @@ class Harness {
   readonly store = new SidecarStore(this.io);
   readonly tracker: AnchorTracker;
   readonly threadAtCursor = vi.fn();
+  readonly openSidebar = vi.fn();
+  readonly commentPaneUsed = vi.fn();
   inline = true;
   /** Whether every passage is entirely inside the editor's visible area. */
   onScreen = true;
@@ -135,7 +137,8 @@ class Harness {
     const harness = this;
     const host: EditorHost = {
       store: this.store,
-      openSidebar: vi.fn(),
+      openSidebar: this.openSidebar,
+      commentPaneUsed: this.commentPaneUsed,
       registerTracker: () => () => undefined,
       anchorsChanged: vi.fn(),
       threadAtCursor: this.threadAtCursor,
@@ -716,6 +719,23 @@ describe("fullyVisible", () => {
 
   it("rejects a passage that isn't rendered", () => {
     expect(fullyVisible(null, viewport)).toBe(false);
+  });
+});
+
+describe("AnchorTracker.openThread", () => {
+  it("opens the thread in the sidebar and makes this pane the note's comment pane", () => {
+    const editor = {};
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")], NOTE, editor);
+    h.tracker.openThread("a");
+    expect(h.commentPaneUsed).toHaveBeenCalledWith(NOTE, editor);
+    expect(h.openSidebar).toHaveBeenCalledWith("a");
+  });
+
+  it("still opens the thread when the editor isn't known", () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a")]);
+    h.tracker.openThread("a");
+    expect(h.commentPaneUsed).not.toHaveBeenCalled();
+    expect(h.openSidebar).toHaveBeenCalledWith("a");
   });
 });
 

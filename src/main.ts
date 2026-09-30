@@ -14,6 +14,7 @@ import {
 import { anchorFieldsFor, type Resolution, resolveComment } from "./anchoring";
 import { detectOsUsername, resolveAuthorName, AUTHOR_OVERRIDE_KEY, FALLBACK_AUTHOR } from "./author";
 import { diffComments } from "./comment-events";
+import { CommentPanes } from "./comment-pane";
 import { confirmAction } from "./confirm-action";
 import { type AnchorTracker, buildEditorExtension, type EditorHost, trackerOnNote } from "./editor-extension";
 import { buildExportNote, type ResolvedThread } from "./export";
@@ -100,6 +101,8 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
   /** Which comments have been read; saved alongside the settings. See read-state.ts. */
   readState!: ReadState;
   private readonly trackers = new Set<AnchorTracker>();
+  /** The pane each note's comments were last worked from; see comment-pane.ts. */
+  private readonly commentPanes = new CommentPanes<Editor>();
   /** Read state changes with every thread opened, so its saves are batched. */
   private readonly saveReadStateSoon = debounce(() => void this.saveAll(), 2000, true);
   /** Sidemark's registration with Local REST API, while there is one. */
@@ -336,6 +339,10 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     return () => this.trackers.delete(tracker);
   }
 
+  commentPaneUsed(notePath: string, editor: Editor): void {
+    this.commentPanes.remember(notePath, editor);
+  }
+
   anchorsChanged(notePath: string): void {
     for (const view of this.sidebars()) view.anchorsChanged(notePath);
   }
@@ -475,6 +482,24 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     return null;
   }
 
+  /**
+   * The pane to show a note's thread in: the one its comments were last worked
+   * from, while that pane still shows the note. Otherwise the active pane, if
+   * it shows the note — though clicking the sidebar usually makes the sidebar
+   * active — and failing that the first pane on the note.
+   */
+  private commentViewFor(file: TFile): MarkdownView | null {
+    const open = this.app.workspace
+      .getLeavesOfType("markdown")
+      .map((leaf) => leaf.view)
+      .filter((view): view is MarkdownView => view instanceof MarkdownView && view.file?.path === file.path);
+    const editor = this.commentPanes.paneFor(
+      file.path,
+      open.map((view) => view.editor)
+    );
+    return open.find((view) => view.editor === editor) ?? this.markdownViewFor(file);
+  }
+
   private async noteText(file: TFile): Promise<string> {
     const view = this.markdownViewFor(file);
     if (view) return view.editor.getValue();
@@ -570,12 +595,13 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       return;
     }
     const from = editor.posToOffset(editor.getCursor("from"));
+    this.commentPanes.remember(file.path, editor);
     const view = await this.openSidebar();
     view?.startDraft({ filePath: file.path, anchor, from, kind });
   }
 
   async revealThread(file: TFile, id: string): Promise<void> {
-    let view = this.markdownViewFor(file);
+    let view = this.commentViewFor(file);
     if (!view) {
       const leaf = this.app.workspace.getLeaf(false);
       await leaf.openFile(file);
@@ -583,6 +609,8 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     }
     if (!view) return;
     const editor = view.editor;
+    // Later threads are shown here too, rather than wherever the fallback lands next time.
+    this.commentPanes.remember(file.path, editor);
     const live = this.trackerFor(file.path, editor)?.anchors.find((a) => a.id === id);
     let range: { from: number; to: number } | null = live ?? null;
     if (!range) {
@@ -824,6 +852,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       void this.store.sidecarChanged(notePath);
     } else if (file instanceof TFile && file.extension === "md") {
       void this.store.noteDeleted(file.path);
+      this.commentPanes.forget(file.path);
       if (removeNote(this.readState, file.path)) this.saveReadStateSoon();
     }
   }
@@ -837,6 +866,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     if (notePathFor(file.path) || notePathFor(oldPath)) return;
     if (file instanceof TFile && file.extension === "md") {
       for (const tracker of this.trackersFor(oldPath)) tracker.noteRenamed(file.path);
+      this.commentPanes.renamed(oldPath, file.path);
       void this.store.noteRenamed(oldPath, file.path).then((outcome) => {
         this.reportRename(outcome, file.path);
         this.readStateRenamed(outcome, oldPath, file.path);
@@ -849,6 +879,7 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
           else if (child instanceof TFile && child.extension === "md") {
             const previous = oldPath + child.path.slice(file.path.length);
             for (const tracker of this.trackersFor(previous)) tracker.noteRenamed(child.path);
+            this.commentPanes.renamed(previous, child.path);
             void this.store.noteRenamed(previous, child.path, true).then((outcome) => {
               this.reportRename(outcome, child.path);
               this.readStateRenamed(outcome, previous, child.path);
