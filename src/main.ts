@@ -871,6 +871,9 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
         this.reportRename(outcome, file.path);
         this.readStateRenamed(outcome, oldPath, file.path);
       });
+    } else if (file instanceof TFile) {
+      // No longer a note, so no pane can be working on its comments.
+      this.commentPanes.forget(oldPath);
     } else if (file instanceof TFolder) {
       // Sidecars moved with the folder; their `document` fields still name the old path.
       const visit = (folder: TFolder): void => {
