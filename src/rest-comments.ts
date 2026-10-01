@@ -15,6 +15,7 @@ import {
   type NewEntry,
   openSuggestion,
   type ResolveBehavior,
+  sameAnchor,
   setThreadResolved,
   type SuggestionFailure,
 } from "./mutations";
@@ -402,7 +403,9 @@ export class CommentsApi {
     if (state.error) return unreadable(state.error);
     const check = openSuggestion(state.doc, id);
     if (!check.ok) return undecidable(id, check.reason);
-    const quoted = findComment(state.doc, id)?.selected_text;
+    const anchored = findComment(state.doc, id);
+    if (!anchored) return undecidable(id, "missing");
+    const quoted = anchored.selected_text;
     const text = await this.backend.noteText(notePath);
     const resolution = (await this.backend.resolveThreads(notePath)).find((t) => t.thread.root.id === id)?.resolution;
     if (!resolution || resolution.kind === "orphaned") return undecidable(id, "orphaned");
@@ -415,7 +418,9 @@ export class CommentsApi {
       | { ok: false; reason: SuggestionFailure | "changed" };
     const behavior = this.backend.resolveBehavior();
     const saved = await this.backend.update(notePath, (doc): Recorded => {
-      if (findComment(doc, id)?.selected_text !== quoted) return { ok: false, reason: "changed" };
+      // The passage was found from this anchor, so any change to it (a retarget to another occurrence of the same words, say) voids the lookup.
+      const current = findComment(doc, id);
+      if (current && !sameAnchor(current, anchored)) return { ok: false, reason: "changed" };
       const ids = descendantIds(doc, id).add(id);
       const thread = structuredClone(doc.comments.filter((c) => ids.has(c.id)));
       const outcome = finishSuggestion(doc, id, "accepted", behavior);
@@ -426,11 +431,18 @@ export class CommentsApi {
     const recorded = saved.value;
     if (!recorded.ok) return undecidable(id, recorded.reason);
 
+    // Undoes only the decision, so a reply or edit that landed on the thread in the meantime survives.
     const restore = () =>
       this.backend.update(notePath, (doc) => {
-        const ids = new Set(recorded.thread.map((c) => c.id));
-        doc.comments = doc.comments.filter((c) => !ids.has(c.id));
-        doc.comments.push(...recorded.thread);
+        for (const before of recorded.thread) {
+          const current = findComment(doc, before.id);
+          if (!current) {
+            doc.comments.push(before);
+            continue;
+          }
+          current.resolved = before.resolved;
+          if (before.id === id) current.x_suggestion = before.x_suggestion;
+        }
       });
     const edit = suggestionEdit(text, resolution.from, resolution.to, recorded.replacement);
     let replaced: boolean;

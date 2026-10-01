@@ -88,6 +88,12 @@ export function deleteThread(doc: MrsfDocument, rootId: string): void {
 }
 
 const TARGETING_FIELDS = ["line", "end_line", "start_column", "end_column", "selected_text"] as const;
+const ANCHOR_FIELDS = [...TARGETING_FIELDS, "anchored_text", "x_prefix", "x_suffix"] as const;
+
+/** Whether two snapshots of a comment would resolve to the same passage of the same text. */
+export function sameAnchor(a: Comment, b: Comment): boolean {
+  return ANCHOR_FIELDS.every((field) => a[field] === b[field]);
+}
 
 /**
  * Deletes one comment following MRSF §9.1: its direct replies inherit its
@@ -120,7 +126,8 @@ export type SuggestionOutcome = { ok: true; suggestion: SuggestionData } | { ok:
 export function openSuggestion(doc: MrsfDocument, rootId: string): SuggestionOutcome {
   const comment = findComment(doc, rootId);
   if (!comment) return { ok: false, reason: "missing" };
-  if (comment.x_suggestion === undefined) return { ok: false, reason: "not-suggestion" };
+  // Only a thread's first comment is the suggestion, whatever a reply carries.
+  if (typeof comment.reply_to === "string" || comment.x_suggestion === undefined) return { ok: false, reason: "not-suggestion" };
   const suggestion = suggestionOf(comment);
   if (!suggestion) return { ok: false, reason: "invalid-suggestion" };
   if (comment.resolved || suggestion.result) return { ok: false, reason: "already-resolved" };

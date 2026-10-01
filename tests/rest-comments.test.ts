@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { resolveComment } from "../src/anchoring";
+import { anchorFieldsFor, resolveComment } from "../src/anchoring";
 import { buildThreads, type Comment } from "../src/model";
-import { addComment, addSuggestion, type ResolveBehavior } from "../src/mutations";
+import { addComment, addSuggestion, type ResolveBehavior, retarget } from "../src/mutations";
 import {
   type ApiError,
   type ApiResult,
@@ -41,16 +41,28 @@ function setup(initial = TEXT) {
   const changes: StoreChange[] = [];
   store.onChange((c) => changes.push(c));
   let n = 0;
-  const note = { text: initial, behavior: "keep" as ResolveBehavior, beforeReplace: () => {} };
+  const note = {
+    text: initial,
+    behavior: "keep" as ResolveBehavior,
+    /** Runs between finding a thread's passage and acting on it, to simulate a concurrent change. */
+    afterResolve: (): void | Promise<unknown> => {},
+    beforeReplace: (): void | Promise<unknown> => {},
+  };
   const api = new CommentsApi({
     load: (p) => store.load(p),
     update: (p, mutate) => store.update(p, mutate, "external"),
     noteText: async () => note.text,
-    resolveThreads: async (p) =>
-      buildThreads((await store.load(p)).doc).map((thread) => ({ thread, resolution: resolveComment(thread.root, note.text) })),
+    resolveThreads: async (p) => {
+      const threads = buildThreads((await store.load(p)).doc).map((thread) => ({
+        thread,
+        resolution: resolveComment(thread.root, note.text),
+      }));
+      await note.afterResolve();
+      return threads;
+    },
     newEntry: (body, author) => ({ id: `c${++n}`, author: author ?? "Adam", timestamp: `2026-09-24T10:00:0${n}Z`, text: body }),
     replacePassage: async (_p, from, to, expected, insert) => {
-      note.beforeReplace();
+      await note.beforeReplace();
       const next = replaceInText(note.text, from, to, expected, insert);
       if (next === null) return false;
       note.text = next;
@@ -373,6 +385,32 @@ describe("CommentsApi.accept", () => {
     expectError(await api.accept(NOTE, "nope"), ErrorCodes.unknownComment);
   });
 
+  it("refuses a reply even when it carries suggestion data", async () => {
+    const { api, store, note, id } = await seedSuggestion();
+    await api.reply(NOTE, id, { text: "Agreed" });
+    await store.update(NOTE, (doc) => {
+      doc.comments[1].x_suggestion = { replacement: "sleepy" };
+    });
+    const before = (await store.load(NOTE)).doc.comments;
+    expectError(await api.accept(NOTE, "c2"), ErrorCodes.notASuggestion);
+    expectError(await api.decline(NOTE, "c2"), ErrorCodes.notASuggestion);
+    expect(note.text).toBe(TEXT);
+    expect((await store.load(NOTE)).doc.comments).toEqual(before);
+  });
+
+  it("refuses when the suggestion is retargeted to another occurrence after its passage was found", async () => {
+    const { api, store, note } = setup();
+    const id = bodyOf<ThreadJson>(await api.create(NOTE, { quote: "fox", occurrence: 1, replacement: "cat" })).id;
+    note.afterResolve = () =>
+      store.update(NOTE, (doc) => {
+        const second = TEXT.lastIndexOf("fox");
+        retarget(doc, id, anchorFieldsFor(TEXT, second, second + "fox".length));
+      });
+    expectError(await api.accept(NOTE, id), ErrorCodes.passageChanged);
+    expect(note.text).toBe(TEXT);
+    expect((await store.load(NOTE)).doc.comments[0]).toMatchObject({ resolved: false, x_suggestion: { replacement: "cat" } });
+  });
+
   it("refuses, changing nothing, when the passage is gone, ambiguous, or changed", async () => {
     const orphaned = await seedSuggestion();
     orphaned.note.text = "Something else entirely.\n";
@@ -423,6 +461,24 @@ describe("CommentsApi.accept", () => {
     };
     await expect(api.accept(NOTE, id)).rejects.toThrow("read-only");
     expect((await store.load(NOTE)).doc.comments).toEqual(before);
+  });
+
+  it("keeps a reply that lands on the thread while the record is being rolled back", async () => {
+    for (const behavior of ["keep", "remove"] as const) {
+      const { api, store, note, id } = await seedSuggestion();
+      note.behavior = behavior;
+      const before = (await store.load(NOTE)).doc.comments;
+      note.beforeReplace = async () => {
+        note.text = TEXT.replace("the lazy", "a lazy");
+        // Only lands when the thread is still there, i.e. when decided threads are kept.
+        await api.reply(NOTE, id, { text: "Wait" });
+      };
+      expectError(await api.accept(NOTE, id), ErrorCodes.passageChanged);
+      const after = (await store.load(NOTE)).doc.comments;
+      expect(after.slice(0, before.length)).toEqual(before);
+      if (behavior === "keep") expect(after[1]).toMatchObject({ reply_to: id, text: "Wait", resolved: false });
+      else expect(after).toHaveLength(before.length);
+    }
   });
 
   it("refuses when the comment file can't be read", async () => {
