@@ -219,6 +219,8 @@ function pathsFor({ prefix, parameters, note, operationSuffix }: Target): Record
           content: json({
             type: "object",
             required: ["quote"],
+            // `text` is optional only for a suggestion, so one of the two has to be sent.
+            anyOf: [{ required: ["text"] }, { required: ["replacement"] }],
             properties: {
               text: {
                 type: "string",
