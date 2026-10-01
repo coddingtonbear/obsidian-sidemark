@@ -61,6 +61,8 @@ export function fullyVisible(
 export interface EditorHost {
   readonly store: SidecarStore;
   openSidebar(focusId?: string): unknown;
+  /** A comment in `editor` was worked with, so the sidebar shows the note's threads in that pane. */
+  commentPaneUsed(notePath: string, editor: Editor): void;
   /** Lets the sidebar read live anchor positions; returns an unregister function. */
   registerTracker(tracker: AnchorTracker): () => void;
   /** Tells the sidebar that anchor positions for a note changed materially. */
@@ -295,6 +297,13 @@ export class AnchorTracker {
     for (const type of USER_SCROLL_EVENTS) scroller.addEventListener(type, stop);
     this.cancelPendingScroll = stop;
     scroller.scrollTo({ top: centeredScrollTop(passage, frame.height), behavior: "smooth" });
+  }
+
+  /** A highlight in this editor was clicked: its thread opens in the sidebar, which then shows threads in this pane. */
+  openThread(id: string): void {
+    const editor = this.editor;
+    if (this.notePath && editor) this.host.commentPaneUsed(this.notePath, editor);
+    void this.host.openSidebar(id);
   }
 
   /** Rebuilds decorations, e.g. after a display setting changed. */
@@ -562,7 +571,7 @@ export class AnchorTracker {
       write: () => {
         const doc = this.view.state.doc;
         const text = doc.toString();
-        applyTableHighlights(this.view, this.anchors, text, text.length, (id) => void this.host.openSidebar(id), (a) =>
+        applyTableHighlights(this.view, this.anchors, text, text.length, (id) => this.openThread(id), (a) =>
           this.tableStyleOf(a, doc)
         );
       },
@@ -620,10 +629,10 @@ export function buildEditorExtension(host: EditorHost) {
   const plugin = ViewPlugin.define((view) => new AnchorTracker(view, host), {
     decorations: (tracker) => tracker.decorations,
     eventHandlers: {
-      mousedown(event: MouseEvent) {
+      mousedown(this: AnchorTracker, event: MouseEvent) {
         const target = event.target instanceof Element ? event.target.closest(".sm-highlight, .sm-suggestion-insert") : null;
         const id = target?.getAttribute("data-sm-id");
-        if (id) void host.openSidebar(id);
+        if (id) this.openThread(id);
         return false;
       },
     },
