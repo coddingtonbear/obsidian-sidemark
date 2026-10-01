@@ -14,7 +14,7 @@ import {
 import { anchorFieldsFor, type Resolution, resolveComment } from "./anchoring";
 import { detectOsUsername, resolveAuthorName, AUTHOR_OVERRIDE_KEY, FALLBACK_AUTHOR } from "./author";
 import { diffComments } from "./comment-events";
-import { CommentPanes } from "./comment-pane";
+import { CommentPanes, selectionPane } from "./comment-pane";
 import { confirmAction } from "./confirm-action";
 import { type AnchorTracker, buildEditorExtension, type EditorHost, trackerOnNote } from "./editor-extension";
 import { buildExportNote, type ResolvedThread } from "./export";
@@ -489,15 +489,20 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
    * active — and failing that the first pane on the note.
    */
   private commentViewFor(file: TFile): MarkdownView | null {
-    const open = this.app.workspace
-      .getLeavesOfType("markdown")
-      .map((leaf) => leaf.view)
-      .filter((view): view is MarkdownView => view instanceof MarkdownView && view.file?.path === file.path);
+    const open = this.viewsOf(file);
     const editor = this.commentPanes.paneFor(
       file.path,
       open.map((view) => view.editor)
     );
     return open.find((view) => view.editor === editor) ?? this.markdownViewFor(file);
+  }
+
+  /** Every pane showing the note, in Obsidian's leaf order. */
+  private viewsOf(file: TFile): MarkdownView[] {
+    return this.app.workspace
+      .getLeavesOfType("markdown")
+      .map((leaf) => leaf.view)
+      .filter((view): view is MarkdownView => view instanceof MarkdownView && view.file?.path === file.path);
   }
 
   private async noteText(file: TFile): Promise<string> {
@@ -583,9 +588,23 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     return { ...fields, selected_text_hash: await selectedTextHash(fields.selected_text) };
   }
 
+  /**
+   * The passage selected in whichever pane showing the note has a selection.
+   * Clicking the sidebar makes it the active leaf, so the active pane can't say
+   * which one the user just selected in; the most recently active pane can.
+   * Failing that, the note's comment pane, then any pane with a selection.
+   */
   async selectionAnchor(file: TFile): Promise<AnchorFields | null> {
-    const view = this.markdownViewFor(file);
-    return view ? this.anchorFromEditor(view.editor) : null;
+    const open = this.viewsOf(file).map((view) => view.editor);
+    const recent = this.app.workspace.getMostRecentLeaf()?.view;
+    const editor = selectionPane(open, (pane) => pane.somethingSelected(), [
+      recent instanceof MarkdownView ? recent.editor : undefined,
+      this.commentPanes.paneFor(file.path, open),
+    ]);
+    if (!editor) return null;
+    // The thread is being worked from this pane now, so it's shown here next time.
+    this.commentPanes.remember(file.path, editor);
+    return this.anchorFromEditor(editor);
   }
 
   private async startDraft(file: TFile, editor: Editor, kind: Draft["kind"]): Promise<void> {

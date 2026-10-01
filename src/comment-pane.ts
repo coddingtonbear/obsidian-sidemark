@@ -32,3 +32,20 @@ export class CommentPanes<P> {
     this.last.delete(notePath);
   }
 }
+
+/**
+ * The pane to take a selection from, among `open`, the panes showing the note:
+ * the first of `preferred` that is open with text selected, failing that the
+ * first open pane with text selected. Editors keep their selection when they
+ * lose focus, so several panes can have one; `preferred` decides between them.
+ */
+export function selectionPane<P>(
+  open: readonly P[],
+  hasSelection: (pane: P) => boolean,
+  preferred: readonly (P | undefined)[]
+): P | undefined {
+  for (const pane of preferred) {
+    if (pane !== undefined && open.includes(pane) && hasSelection(pane)) return pane;
+  }
+  return open.find(hasSelection);
+}
