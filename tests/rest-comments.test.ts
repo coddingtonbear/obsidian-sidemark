@@ -127,10 +127,44 @@ describe("CommentsApi.create", () => {
     ["a zero occurrence", { text: "Hi", quote: "fox", occurrence: 0 }],
     ["a fractional occurrence", { text: "Hi", quote: "fox", occurrence: 1.5 }],
     ["a blank author", { text: "Hi", quote: "lazy", author: " " }],
+    ["a non-string replacement", { quote: "lazy", replacement: 3 }],
+    ["a replacement identical to the quote", { quote: "lazy", replacement: "lazy" }],
+    ["a non-string explanation", { quote: "lazy", replacement: "idle", text: 3 }],
+    ["a type", { text: "Hi", quote: "lazy", type: "suggestion" }],
+    ["an x_suggestion", { text: "Hi", quote: "lazy", x_suggestion: { replacement: "idle" } }],
   ])("refuses %s", async (_label, body) => {
     const { api, io } = setup();
     expectError(await api.create(NOTE, body), ErrorCodes.invalidBody);
     expect(io.files.size).toBe(0);
+  });
+
+  it("adds a suggested edit when given a replacement", async () => {
+    const { api, store } = setup();
+    const result = await api.create(NOTE, { quote: "lazy", replacement: "sleepy", text: " Livelier ", author: "Claude" });
+    expect(result.status).toBe(201);
+    const thread = bodyOf<ThreadJson>(result);
+    expect(thread.root).toMatchObject({
+      author: "Claude",
+      text: "Livelier",
+      type: "suggestion",
+      selected_text: "lazy",
+      x_suggestion: { replacement: "sleepy" },
+    });
+    expect(thread.anchor).toMatchObject({ status: "anchored", text: "lazy" });
+    expect((await store.load(NOTE)).doc.comments[0]).toEqual(thread.root);
+  });
+
+  it("lets a suggestion go without an explanation, and suggest a deletion", async () => {
+    const { api } = setup();
+    const thread = bodyOf<ThreadJson>(await api.create(NOTE, { quote: "quick ", replacement: "" }));
+    expect(thread.root).toMatchObject({ text: "", type: "suggestion", x_suggestion: { replacement: "" } });
+  });
+
+  it("anchors a suggestion on the chosen occurrence", async () => {
+    const { api } = setup();
+    const thread = bodyOf<ThreadJson>(await api.create(NOTE, { quote: "fox", occurrence: 2, replacement: "cat" }));
+    expect(thread.anchor).toMatchObject({ from: TEXT.lastIndexOf("fox") });
+    expectError(await api.create(NOTE, { quote: "fox", replacement: "cat" }), ErrorCodes.ambiguousQuote);
   });
 });
 

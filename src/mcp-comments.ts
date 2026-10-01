@@ -74,7 +74,7 @@ export function commentTools(comments: CommentsApi, resolveNote: NoteResolver): 
         "Lists the comment threads on a note (Sidemark comments, kept in the note's .review.yaml sidecar). " +
         "Each thread has its first comment (`root`), its replies, whether it is resolved, and `anchor`: where the " +
         "commented passage is in the note now, or `orphaned` when it can no longer be found. Suggested edits appear " +
-        "as threads too; they can only be accepted or declined in Obsidian.",
+        "as threads too; they can be added with comments_add, but only accepted or declined in Obsidian.",
       inputSchema: {
         path,
         resolved: z.boolean().optional().describe("Only resolved threads (true) or only open ones (false). Omit for all."),
@@ -95,10 +95,14 @@ export function commentTools(comments: CommentsApi, resolveNote: NoteResolver): 
       title: "Comment on a passage",
       description:
         "Starts a comment thread on a passage of a note. `quote` is the passage, copied exactly from the note; " +
-        "when it appears more than once, `occurrence` says which (counting from 1). Returns the new thread.",
+        "when it appears more than once, `occurrence` says which (counting from 1). Pass `replacement` to suggest " +
+        "an edit instead: the reader can accept it in Obsidian to replace the passage with it. Returns the new thread.",
       inputSchema: {
         path,
-        text: z.string().describe("The comment (Markdown)"),
+        text: z
+          .string()
+          .optional()
+          .describe("The comment (Markdown). Required for a comment; for a suggested edit, its optional explanation."),
         quote: z.string().describe("The passage to comment on, exactly as it appears in the note"),
         occurrence: z
           .number()
@@ -106,9 +110,14 @@ export function commentTools(comments: CommentsApi, resolveNote: NoteResolver): 
           .min(1)
           .optional()
           .describe("Which match of `quote` to comment on, counting from 1. Required when the quote appears more than once."),
+        replacement: z
+          .string()
+          .optional()
+          .describe("Makes this a suggested edit: the text to replace the passage with. An empty string suggests deleting it."),
         author,
       },
-      run: (notePath, { text, quote, occurrence, author }) => comments.create(notePath, { text, quote, occurrence, author }),
+      run: (notePath, { text, quote, occurrence, replacement, author }) =>
+        comments.create(notePath, { text, quote, occurrence, replacement, author }),
     }),
     tool(resolveNote, {
       name: "comments_reply",

@@ -5,6 +5,7 @@ import { buildThreads, type Comment, isResolved, isSuggestionComment, type MrsfD
 import {
   addComment,
   addReply,
+  addSuggestion,
   deleteComment,
   deleteThread,
   editText,
@@ -150,6 +151,12 @@ function requiredText(body: Record<string, unknown>, key: string): Fields<string
   return { ok: true, value };
 }
 
+/** A suggestion's explanation: optional, as in the sidebar, and stored trimmed. */
+function explanation(body: Record<string, unknown>): Fields<string> {
+  const value = optionalString(body, "text");
+  return value.ok ? { ok: true, value: (value.value ?? "").trim() } : value;
+}
+
 function optionalAuthor(body: Record<string, unknown>): Fields<string | undefined> {
   const value = body.author;
   if (value === undefined) return { ok: true, value: undefined };
@@ -202,17 +209,25 @@ export class CommentsApi {
 
   /**
    * `POST /` — a new comment on the `occurrence`-th (1-based) match of `quote`.
-   * A quote found more than once needs an `occurrence`.
+   * A quote found more than once needs an `occurrence`. With `replacement`, the
+   * comment is a suggested edit, and `text` is its optional explanation.
    */
   async create(notePath: string, rawBody: unknown): Promise<ApiResult> {
     const refused = notANote(notePath);
     if (refused) return refused;
     const body = objectBody(rawBody);
     if (!body.ok) return body.result;
-    const text = requiredText(body.value, "text");
+    // Sidecar fields a caller might copy from a listed suggestion; dropping them would quietly make a plain comment.
+    for (const key of ["type", "x_suggestion"]) {
+      if (key in body.value) return badBody(`"${key}" can't be set; send "replacement" to suggest an edit.`).result;
+    }
+    const replacement = optionalString(body.value, "replacement");
+    if (!replacement.ok) return replacement.result;
+    const text = replacement.value === undefined ? requiredText(body.value, "text") : explanation(body.value);
     if (!text.ok) return text.result;
     const quote = body.value.quote;
     if (typeof quote !== "string" || quote === "") return badBody('"quote" is required and must be a non-empty string.').result;
+    if (replacement.value === quote) return badBody('"replacement" is identical to the quote, so it suggests no change.').result;
     const occurrence = body.value.occurrence;
     if (occurrence !== undefined && (typeof occurrence !== "number" || !Number.isInteger(occurrence) || occurrence < 1)) {
       return badBody('"occurrence" must be a whole number of 1 or more.').result;
@@ -241,7 +256,10 @@ export class CommentsApi {
     const fields = anchorFieldsFor(note, from, to);
     const anchor = { ...fields, selected_text_hash: await selectedTextHash(fields.selected_text) };
     const entry = this.backend.newEntry(text.value, author.value);
-    const saved = await this.backend.update(notePath, (doc) => addComment(doc, entry, anchor));
+    const proposed = replacement.value;
+    const saved = await this.backend.update(notePath, (doc) =>
+      proposed === undefined ? addComment(doc, entry, anchor) : addSuggestion(doc, entry, anchor, proposed)
+    );
     if (!saved.ok) return unreadable(saved.error);
     const thread: ThreadJson = {
       id: saved.value.id,
