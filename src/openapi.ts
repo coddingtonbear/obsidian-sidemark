@@ -139,7 +139,9 @@ const MISSING_FILE = "A file that doesn't exist gets Local REST API's own 404.";
 const NOT_FOUND_NOTE = `The file isn't a Markdown note (${code(ErrorCodes.notANote)}). ${MISSING_FILE}`;
 const NOT_FOUND_COMMENT = `The file isn't a Markdown note (${code(ErrorCodes.notANote)}), or the note has no comment with this id (${code(ErrorCodes.unknownComment)}). ${MISSING_FILE}`;
 const UNREADABLE = `The note's comment file can't be parsed (${code(ErrorCodes.unreadableSidecar)}), so it's left untouched; \`message\` carries the parse error.`;
-const INVALID_BODY = `The body isn't a JSON object, or a field is missing or of the wrong type (${code(ErrorCodes.invalidBody)}).`;
+const UNREADABLE_CLAUSE = `the comment file can't be parsed (${code(ErrorCodes.unreadableSidecar)})`;
+const NOT_DECIDABLE = `The comment isn't a suggested edit's first comment (${code(ErrorCodes.notASuggestion)}), or its suggestion data is invalid (${code(ErrorCodes.invalidSuggestion)}).`;
+const INVALID_BODY =`The body isn't a JSON object, or a field is missing or of the wrong type (${code(ErrorCodes.invalidBody)}).`;
 
 const matches: OpenApiObject = { type: "integer", description: "How many times the quote appears in the note." };
 
@@ -147,6 +149,19 @@ const authorProperty: OpenApiObject = {
   type: "string",
   description: "Who the comment is from. Defaults to the author name set in Sidemark.",
   example: "Claude",
+};
+
+const decisionResponse: OpenApiObject = {
+  description: "Done.",
+  content: json(
+    object({
+      result: { type: "string", enum: ["accepted", "declined"] },
+      comment: {
+        description: "The suggestion's first comment as recorded now; null when its thread was removed.",
+        oneOf: [ref(SCHEMAS.comment), { type: "null" }],
+      },
+    })
+  ),
 };
 
 const idParameter: OpenApiObject = {
@@ -213,7 +228,7 @@ function pathsFor({ prefix, parameters, note, operationSuffix }: Target): Record
       post: operation("AddComment", {
         summary: `Add a comment to ${note}`,
         description:
-          "Anchors a new comment on the passage `quote`, which must appear in the note exactly as given. When it appears more than once, `occurrence` chooses one. With `replacement`, the comment is a suggested edit that can be accepted in Obsidian, and `text` becomes its optional explanation.",
+          "Anchors a new comment on the passage `quote`, which must appear in the note exactly as given. When it appears more than once, `occurrence` chooses one. With `replacement`, the comment is a suggested edit, accepted or declined with `…/{id}/accept` and `…/{id}/decline`, and `text` becomes its optional explanation.",
         requestBody: {
           required: true,
           content: json({
@@ -266,7 +281,7 @@ function pathsFor({ prefix, parameters, note, operationSuffix }: Target): Record
       patch: operation("UpdateComment", {
         summary: `Edit a comment of ${note}, or resolve or reopen its thread`,
         description:
-          "`text` edits the comment; `resolved` resolves or reopens the whole thread the comment belongs to. Send either or both. A suggestion is resolved by accepting or declining it in Obsidian, so `resolved` is refused on a suggestion's thread. A refused request changes nothing.",
+          "`text` edits the comment; `resolved` resolves or reopens the whole thread the comment belongs to. Send either or both. A suggestion is resolved by accepting or declining it, so `resolved` is refused on a suggestion's thread. A refused request changes nothing.",
         requestBody: {
           required: true,
           content: json({
@@ -323,6 +338,38 @@ function pathsFor({ prefix, parameters, note, operationSuffix }: Target): Record
         },
       }),
     },
+    [`${base}/{id}/accept`]: {
+      parameters: [...parameters, idParameter],
+      post: operation("AcceptSuggestion", {
+        summary: `Accept a suggested edit on ${note}`,
+        description:
+          "Replaces the suggestion's passage in the note with its `replacement`, through the editor when the note is open (so it can be undone there), and records the suggestion as accepted, or removes its thread when Sidemark is set to remove resolved threads. `id` is the suggestion's first comment. A refused request changes nothing.",
+        responses: {
+          "200": decisionResponse,
+          "404": refusal(NOT_FOUND_COMMENT),
+          "409": refusal(
+            `The suggestion was already accepted, declined, or resolved (${code(ErrorCodes.suggestionDecided)}); its passage can't be found (${code(ErrorCodes.passageOrphaned)}), appears more than once (${code(ErrorCodes.passageAmbiguous)}), or has changed since the suggestion was made (${code(ErrorCodes.passageChanged)}); or ${UNREADABLE_CLAUSE}.`
+          ),
+          "422": refusal(NOT_DECIDABLE),
+        },
+      }),
+    },
+    [`${base}/{id}/decline`]: {
+      parameters: [...parameters, idParameter],
+      post: operation("DeclineSuggestion", {
+        summary: `Decline a suggested edit on ${note}`,
+        description:
+          "Records the suggestion as declined, leaving the note as it is, or removes its thread when Sidemark is set to remove resolved threads. `id` is the suggestion's first comment.",
+        responses: {
+          "200": decisionResponse,
+          "404": refusal(NOT_FOUND_COMMENT),
+          "409": refusal(
+            `The suggestion was already accepted, declined, or resolved (${code(ErrorCodes.suggestionDecided)}), or ${UNREADABLE_CLAUSE}.`
+          ),
+          "422": refusal(NOT_DECIDABLE),
+        },
+      }),
+    },
   };
 }
 
@@ -330,7 +377,7 @@ function tagDescription(pluginId: string): string {
   const events = COMMENT_EVENT_TYPES.map((type) => `\`${type}\``).join(", ");
   return [
     "Comments and suggested edits on your notes, added by the [Sidemark](https://github.com/coddingtonbear/obsidian-sidemark) plugin. They're kept in a `.review.yaml` file next to each note, and changes made here show up in Sidemark's sidebar immediately.",
-    "Only Markdown notes have comments. Suggested edits can be read and added here but only accepted or declined in Obsidian, since that edits the note.",
+    "Only Markdown notes have comments. Suggested edits are threads too: add one with a `replacement`, and accept or decline it with its own routes. Accepting edits the note.",
     "#### Events",
     `Sidemark adds these events to the event streams, with \`${pluginId}\` as the emitter (\`POST /events/${pluginId}/{event}/\`): ${events}.`,
     "Each carries the note's `path`, the comment's `id`, its `thread` (the id of the thread's first comment), and the comment's `author`, `timestamp`, and `text` (left out of `comment-deleted`). A thread's resolving or reopening is reported once, for its first comment.",

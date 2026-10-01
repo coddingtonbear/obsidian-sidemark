@@ -74,7 +74,7 @@ export function commentTools(comments: CommentsApi, resolveNote: NoteResolver): 
         "Lists the comment threads on a note (Sidemark comments, kept in the note's .review.yaml sidecar). " +
         "Each thread has its first comment (`root`), its replies, whether it is resolved, and `anchor`: where the " +
         "commented passage is in the note now, or `orphaned` when it can no longer be found. Suggested edits appear " +
-        "as threads too; they can be added with comments_add, but only accepted or declined in Obsidian.",
+        "as threads too; add one with comments_add, and act on it with comments_accept or comments_decline.",
       inputSchema: {
         path,
         resolved: z.boolean().optional().describe("Only resolved threads (true) or only open ones (false). Omit for all."),
@@ -96,7 +96,7 @@ export function commentTools(comments: CommentsApi, resolveNote: NoteResolver): 
       description:
         "Starts a comment thread on a passage of a note. `quote` is the passage, copied exactly from the note; " +
         "when it appears more than once, `occurrence` says which (counting from 1). Pass `replacement` to suggest " +
-        "an edit instead: the reader can accept it in Obsidian to replace the passage with it. Returns the new thread.",
+        "an edit instead: accepting it replaces the passage with it. Returns the new thread.",
       inputSchema: {
         path,
         text: z
@@ -132,7 +132,7 @@ export function commentTools(comments: CommentsApi, resolveNote: NoteResolver): 
       description:
         "Edits a comment's text, resolves or reopens its thread, or both. Pass `expected_text` with `text` to " +
         "have the edit refused if the comment was changed since you read it. A suggested edit's thread can't be " +
-        "resolved here; that happens by accepting or declining it in Obsidian.",
+        "resolved here; accept or decline it with comments_accept or comments_decline instead.",
       inputSchema: {
         path,
         id,
@@ -151,6 +151,28 @@ export function commentTools(comments: CommentsApi, resolveNote: NoteResolver): 
       inputSchema: { path, id },
       annotations: { destructiveHint: true },
       run: (notePath, args) => comments.remove(notePath, args.id),
+    }),
+    tool(resolveNote, {
+      name: "comments_accept",
+      title: "Accept a suggested edit",
+      description:
+        "Accepts a suggested edit: replaces its passage in the note with the suggestion's replacement and marks the " +
+        "suggestion accepted (or removes its thread, if Sidemark is set to remove resolved threads). `id` is the " +
+        "suggestion's first comment. Refused, changing nothing, when the passage can't be found, appears more than " +
+        "once, or has changed since the suggestion was made.",
+      inputSchema: { path, id },
+      annotations: { destructiveHint: true },
+      run: (notePath, args) => comments.accept(notePath, args.id),
+    }),
+    tool(resolveNote, {
+      name: "comments_decline",
+      title: "Decline a suggested edit",
+      description:
+        "Declines a suggested edit, leaving the note as it is, and marks the suggestion declined (or removes its " +
+        "thread, if Sidemark is set to remove resolved threads). `id` is the suggestion's first comment.",
+      inputSchema: { path, id },
+      annotations: { destructiveHint: true },
+      run: (notePath, args) => comments.decline(notePath, args.id),
     }),
   ];
 }

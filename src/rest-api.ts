@@ -222,4 +222,6 @@ export function mountCommentsApi(router: SubresourceRouter, comments: CommentsAp
   router.patch("/:id", route((req) => comments.patch(req.vaultFile.path, req.params.id, req.body)));
   router.delete("/:id", route((req) => comments.remove(req.vaultFile.path, req.params.id)));
   router.post("/:id/replies", route((req) => comments.reply(req.vaultFile.path, req.params.id, req.body)));
+  router.post("/:id/accept", route((req) => comments.accept(req.vaultFile.path, req.params.id)));
+  router.post("/:id/decline", route((req) => comments.decline(req.vaultFile.path, req.params.id)));
 }

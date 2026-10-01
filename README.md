@@ -142,6 +142,8 @@ When [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api)
 | `POST …/comments/<id>/replies` | Adds a reply: `{"text": "…", "author": "…"}`. |
 | `PATCH …/comments/<id>` | `{"text": "…"}` edits the comment; add `"expected_text"` to have the edit refused (409) if someone changed it first. `{"resolved": true}` resolves the thread and `false` reopens it. |
 | `DELETE …/comments/<id>` | Deletes a thread's first comment together with the thread, or a single reply. |
+| `POST …/comments/<id>/accept` | Accepts a suggested edit: replaces its passage in the note and marks it accepted. Refused (409), changing nothing, when the passage can't be found, appears more than once, or has changed since the suggestion was made. |
+| `POST …/comments/<id>/decline` | Declines a suggested edit, leaving the note alone. |
 
 ```sh
 curl -k -X POST -H "Authorization: Bearer <api key>" -H "Content-Type: application/json" \
@@ -149,7 +151,7 @@ curl -k -X POST -H "Authorization: Bearer <api key>" -H "Content-Type: applicati
   "https://127.0.0.1:27124/vault/Projects/Plan.md/comments/"
 ```
 
-Suggested edits are listed with the other threads and can be added here, but can only be accepted or declined in Obsidian, since that edits the note. A comment file Sidemark can't parse is never written to; requests for its note answer 409 with the parse error. Only Markdown notes have comments; the routes answer 404 for any other file.
+Suggested edits are listed with the other threads. Accepting one over the API edits the note in its open editor when there is one, so Undo works there as it does for the sidebar's ✓; otherwise it edits the file. Either way, a decided suggestion follows the *resolved threads* setting: kept as resolved history, or removed. A comment file Sidemark can't parse is never written to; requests for its note answer 409 with the parse error. Only Markdown notes have comments; the routes answer 404 for any other file.
 
 These routes, what they send, and their errors are described in the OpenAPI spec Local REST API serves at `/openapi.yaml` and `/openapi.json`, under the **Sidemark Comments** tag.
 
@@ -163,6 +165,8 @@ The same operations are MCP tools on Local REST API's MCP server, for assistants
 | `comments_reply` | `POST …/comments/<id>/replies` |
 | `comments_update` | `PATCH …/comments/<id>` |
 | `comments_delete` | `DELETE …/comments/<id>` |
+| `comments_accept` | `POST …/comments/<id>/accept` |
+| `comments_decline` | `POST …/comments/<id>/decline` |
 
 A request the REST API would refuse comes back as a tool error carrying the same error body, so an assistant can correct it — pick an `occurrence`, say, or re-read a comment that changed.
 
