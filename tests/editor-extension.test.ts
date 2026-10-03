@@ -509,6 +509,16 @@ describe("AnchorTracker", () => {
     expect(h.dispatched.length).toBe(before + 1);
   });
 
+  it("marks an off-screen passage without scrolling when asked not to", async () => {
+    const h = new Harness(TEXT, [commentOn(TEXT, "quick brown", "a"), commentOn(TEXT, "Second", "b")]);
+    await settle();
+    h.onScreen = false;
+    h.tracker.showThread("b", false);
+    expect(h.decorated()[1][1]).toContain("sm-highlight-active");
+    expect(h.scroller.scrolls).toEqual([]);
+    expect(h.scroller.listening).toBe(0);
+  });
+
   it("doesn't correct an eased scroll that landed on the passage", async () => {
     const h = new Harness(TEXT, [commentOn(TEXT, "Second", "b")]);
     await settle();

@@ -14,7 +14,7 @@ import {
 import { anchorFieldsFor, type Resolution, resolveComment } from "./anchoring";
 import { detectOsUsername, resolveAuthorName, AUTHOR_OVERRIDE_KEY, FALLBACK_AUTHOR } from "./author";
 import { diffComments } from "./comment-events";
-import { CommentPanes, selectionPane } from "./comment-pane";
+import { CommentPanes, revealPane, selectionPane } from "./comment-pane";
 import { confirmAction } from "./confirm-action";
 import { type AnchorTracker, buildEditorExtension, type EditorHost, trackerOnNote } from "./editor-extension";
 import { buildExportNote, type ResolvedThread } from "./export";
@@ -103,6 +103,8 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
   private readonly trackers = new Set<AnchorTracker>();
   /** The pane each note's comments were last worked from; see comment-pane.ts. */
   private readonly commentPanes = new CommentPanes<Editor>();
+  /** Panes opted out of following selected comments; see `followsComments`. */
+  private readonly unfollowing = new WeakSet<Editor>();
   /** Read state changes with every thread opened, so its saves are batched. */
   private readonly saveReadStateSoon = debounce(() => void this.saveAll(), 2000, true);
   /** Sidemark's registration with Local REST API, while there is one. */
@@ -214,18 +216,30 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor, info) => {
         const file = info.file;
-        if (!editor.somethingSelected() || !file) return;
+        if (!file) return;
+        if (editor.somethingSelected()) {
+          menu.addItem((item) =>
+            item
+              .setTitle("Add comment")
+              .setIcon("message-square")
+              .onClick(() => void this.startDraft(file, editor, "comment"))
+          );
+          menu.addItem((item) =>
+            item
+              .setTitle("Suggest edit")
+              .setIcon("replace")
+              .onClick(() => void this.startDraft(file, editor, "suggestion"))
+          );
+        }
+        // Only matters with the note in several panes; still offered in an opted-out pane, so it can be turned off.
+        const follows = this.followsComments(editor);
+        if (follows && this.viewsOf(file).length < 2) return;
         menu.addItem((item) =>
           item
-            .setTitle("Add comment")
-            .setIcon("message-square")
-            .onClick(() => void this.startDraft(file, editor, "comment"))
-        );
-        menu.addItem((item) =>
-          item
-            .setTitle("Suggest edit")
-            .setIcon("replace")
-            .onClick(() => void this.startDraft(file, editor, "suggestion"))
+            .setTitle("Don't follow selected comments")
+            .setIcon("eye-off")
+            .setChecked(!follows)
+            .onClick(() => this.setFollowsComments(editor, !follows))
         );
       })
     );
@@ -356,9 +370,29 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
     return this.settings.showSuggestionsInline;
   }
 
-  /** Highlights a thread's passage in every editor showing the note (null clears it). */
+  /**
+   * Highlights a thread's passage in every editor showing the note (null
+   * clears it), scrolling to it only in the panes that follow selected comments.
+   */
   showThreadInEditor(file: TFile, id: string | null): void {
-    for (const tracker of this.trackersFor(file.path)) tracker.showThread(id);
+    for (const tracker of this.trackersFor(file.path)) {
+      const editor = tracker.editor;
+      tracker.showThread(id, !editor || this.followsComments(editor));
+    }
+  }
+
+  /**
+   * Whether a pane scrolls to, and is revealed in for, the comment selected in
+   * the sidebar. Turned off per pane from its context menu and held only in
+   * memory, so a pane follows again once it's closed or Obsidian restarts.
+   */
+  private followsComments(editor: Editor): boolean {
+    return !this.unfollowing.has(editor);
+  }
+
+  private setFollowsComments(editor: Editor, follows: boolean): void {
+    if (follows) this.unfollowing.delete(editor);
+    else this.unfollowing.add(editor);
   }
 
   decideSuggestion(notePath: string, id: string, result: SuggestionResult): void {
@@ -486,15 +520,17 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
    * The pane to show a note's thread in: the one its comments were last worked
    * from, while that pane still shows the note. Otherwise the active pane, if
    * it shows the note — though clicking the sidebar usually makes the sidebar
-   * active — and failing that the first pane on the note.
+   * active — and failing that the first pane on the note. Panes that don't
+   * follow selected comments are passed over unless every pane on the note is one.
    */
   private commentViewFor(file: TFile): MarkdownView | null {
     const open = this.viewsOf(file);
-    const editor = this.commentPanes.paneFor(
-      file.path,
-      open.map((view) => view.editor)
-    );
-    return open.find((view) => view.editor === editor) ?? this.markdownViewFor(file);
+    const editors = open.map((view) => view.editor);
+    const editor = revealPane(editors, (pane) => this.followsComments(pane), [
+      this.commentPanes.paneFor(file.path, editors),
+      this.app.workspace.getActiveViewOfType(MarkdownView)?.editor,
+    ]);
+    return open.find((view) => view.editor === editor) ?? null;
   }
 
   /** Every pane showing the note, in Obsidian's leaf order. */

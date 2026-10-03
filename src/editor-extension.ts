@@ -223,15 +223,16 @@ export class AnchorTracker {
    * taking focus. Pass null to clear it. A passage that isn't entirely on
    * screen is scrolled to the middle of the editor; one that is stays put, so
    * picking a thread whose passage you can already see doesn't move the note.
+   * With `scroll` false the passage is only marked, wherever it is.
    */
-  showThread(id: string | null): void {
+  showThread(id: string | null, scroll = true): void {
     if (this.destroyed) return;
     // A newer selection (or none) replaces whatever the last one was scrolling to.
     this.cancelPendingScroll?.();
     const anchor = id ? this.anchors.find((a) => a.id === id) : undefined;
     const effects: StateEffect<unknown>[] = [showThreadEffect.of(anchor ? anchor.id : null)];
     this.view.dispatch({ effects });
-    if (anchor && !this.passageOnScreen(anchor)) this.easeToPassage(anchor);
+    if (anchor && scroll && !this.passageOnScreen(anchor)) this.easeToPassage(anchor);
   }
 
   /** The thread's anchor as it is now; edits replace anchors with moved copies. */
