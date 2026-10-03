@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CommentPanes } from "../src/comment-pane";
+import { CommentPanes, selectionPane } from "../src/comment-pane";
 
 // Panes are compared by identity, as editors are.
 const left = { name: "left" };
@@ -52,5 +52,33 @@ describe("CommentPanes", () => {
     panes.remember("note.md", right);
     panes.forget("note.md");
     expect(panes.paneFor("note.md", [left, right])).toBeUndefined();
+  });
+});
+
+describe("selectionPane", () => {
+  const selectedIn =
+    (...selected: object[]) =>
+    (pane: object) =>
+      selected.includes(pane);
+
+  it("takes the only pane with a selection, whichever pane comes first", () => {
+    expect(selectionPane([left, right], selectedIn(right), [])).toBe(right);
+  });
+
+  it("has no pane when nothing is selected anywhere", () => {
+    expect(selectionPane([left, right], selectedIn(), [left, right])).toBeUndefined();
+  });
+
+  it("prefers the first preferred pane with a selection", () => {
+    expect(selectionPane([left, right], selectedIn(left, right), [right, left])).toBe(right);
+  });
+
+  it("passes over a preferred pane without a selection", () => {
+    expect(selectionPane([left, right], selectedIn(left), [right, undefined])).toBe(left);
+  });
+
+  it("ignores a preferred pane that doesn't show the note", () => {
+    const elsewhere = { name: "elsewhere" };
+    expect(selectionPane([left, right], selectedIn(left, elsewhere), [elsewhere])).toBe(left);
   });
 });
