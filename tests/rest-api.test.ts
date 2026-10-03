@@ -211,9 +211,11 @@ describe("mountCommentsApi", () => {
       patch: record("patch", {}),
       remove: record("remove"),
       reply: record("reply", {}),
+      accept: record("accept", {}),
+      decline: record("decline", {}),
     });
     expect([...routes.keys()].sort()).toEqual(
-      ["DELETE /:id", "GET /", "GET /:id", "PATCH /:id", "POST /", "POST /:id/replies"].sort()
+      ["DELETE /:id", "GET /", "GET /:id", "PATCH /:id", "POST /", "POST /:id/replies", "POST /:id/accept", "POST /:id/decline"].sort()
     );
     const run = async (key: string, req: SubresourceRequest) => {
       const { res, sent, done } = fakeResponse();
@@ -227,6 +229,8 @@ describe("mountCommentsApi", () => {
     await run("PATCH /:id", request({ params: { id: "c1" }, body: { resolved: true } }));
     expect(await run("DELETE /:id", request({ params: { id: "c1" } }))).toEqual({ status: 204, ended: true });
     await run("POST /:id/replies", request({ params: { id: "c1" }, body: { text: "yo" } }));
+    await run("POST /:id/accept", request({ params: { id: "s1" } }));
+    await run("POST /:id/decline", request({ params: { id: "s2" } }));
     expect(calls).toEqual([
       ["list", "a.md", { resolved: "false" }],
       ["create", "a.md", { text: "hi" }],
@@ -234,6 +238,8 @@ describe("mountCommentsApi", () => {
       ["patch", "a.md", "c1", { resolved: true }],
       ["remove", "a.md", "c1"],
       ["reply", "a.md", "c1", { text: "yo" }],
+      ["accept", "a.md", "s1"],
+      ["decline", "a.md", "s2"],
     ]);
   });
 

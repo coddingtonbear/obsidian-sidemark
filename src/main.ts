@@ -78,7 +78,7 @@ import {
   VIEW_TYPE_SIDEMARK,
 } from "./sidebar";
 import { type RenameOutcome, SidecarStore, type StoreChange } from "./store";
-import { suggestionEdit } from "./suggestion-edit";
+import { replaceInText, suggestionEdit } from "./suggestion-edit";
 import { migrateTandemComments } from "./tandem-runner";
 import { VaultSidecarIO } from "./vault-io";
 
@@ -847,7 +847,31 @@ export default class SidemarkPlugin extends Plugin implements EditorHost {
       noteText: (notePath) => this.noteText(fileAt(notePath)),
       resolveThreads: (notePath) => this.resolveThreads(fileAt(notePath)),
       newEntry: (text, author) => ({ ...this.newEntry(text), ...(author === undefined ? {} : { author }) }),
+      replacePassage: (notePath, from, to, expected, insert) => this.replacePassage(fileAt(notePath), from, to, expected, insert),
+      resolveBehavior: () => this.settings.resolveBehavior,
     };
+  }
+
+  /**
+   * Replaces `[from, to)` of the note, as `noteText` reads it, if it still reads
+   * `expected`: in the editor `noteText` read, so the edit can be undone there,
+   * or in the file when no editor shows the note.
+   */
+  private async replacePassage(file: TFile, from: number, to: number, expected: string, insert: string): Promise<boolean> {
+    const view = this.markdownViewFor(file);
+    if (view) {
+      const editor = view.editor;
+      if (editor.getValue().slice(from, to) !== expected) return false;
+      editor.transaction({ changes: [{ from: editor.offsetToPos(from), to: editor.offsetToPos(to), text: insert }] });
+      return true;
+    }
+    let replaced = false;
+    await this.app.vault.process(file, (raw) => {
+      const next = replaceInText(raw, from, to, expected, insert);
+      replaced = next !== null;
+      return next ?? raw;
+    });
+    return replaced;
   }
 
   // ── Keeping sidecars with their notes ─────────────────────

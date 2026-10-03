@@ -1,10 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { resolveComment } from "../src/anchoring";
+import { anchorFieldsFor, resolveComment } from "../src/anchoring";
 import { buildThreads, type Comment } from "../src/model";
-import { addComment, addSuggestion } from "../src/mutations";
-import { type ApiError, type ApiResult, CommentsApi, ErrorCodes, quoteOffsets, type ThreadJson } from "../src/rest-comments";
+import { addComment, addSuggestion, type ResolveBehavior, retarget } from "../src/mutations";
+import {
+  type ApiError,
+  type ApiResult,
+  CommentsApi,
+  type DecisionJson,
+  ErrorCodes,
+  quoteOffsets,
+  type ThreadJson,
+} from "../src/rest-comments";
 import { sidecarPathFor } from "../src/sidecar-path";
 import { type SidecarIO, SidecarStore, type StoreChange } from "../src/store";
+import { replaceInText } from "../src/suggestion-edit";
 
 class MemoryIO implements SidecarIO {
   files = new Map<string, string>();
@@ -26,21 +35,42 @@ class MemoryIO implements SidecarIO {
 const NOTE = "dir/Note.md";
 const TEXT = "# Title\n\nThe quick brown fox jumps over the lazy dog. The fox again.\n";
 
-function setup(text = TEXT) {
+function setup(initial = TEXT) {
   const io = new MemoryIO();
   const store = new SidecarStore(io);
   const changes: StoreChange[] = [];
   store.onChange((c) => changes.push(c));
   let n = 0;
+  const note = {
+    text: initial,
+    behavior: "keep" as ResolveBehavior,
+    /** Runs between finding a thread's passage and acting on it, to simulate a concurrent change. */
+    afterResolve: (): void | Promise<unknown> => {},
+    beforeReplace: (): void | Promise<unknown> => {},
+  };
   const api = new CommentsApi({
     load: (p) => store.load(p),
     update: (p, mutate) => store.update(p, mutate, "external"),
-    noteText: async () => text,
-    resolveThreads: async (p) =>
-      buildThreads((await store.load(p)).doc).map((thread) => ({ thread, resolution: resolveComment(thread.root, text) })),
+    noteText: async () => note.text,
+    resolveThreads: async (p) => {
+      const threads = buildThreads((await store.load(p)).doc).map((thread) => ({
+        thread,
+        resolution: resolveComment(thread.root, note.text),
+      }));
+      await note.afterResolve();
+      return threads;
+    },
     newEntry: (body, author) => ({ id: `c${++n}`, author: author ?? "Adam", timestamp: `2026-09-24T10:00:0${n}Z`, text: body }),
+    replacePassage: async (_p, from, to, expected, insert) => {
+      await note.beforeReplace();
+      const next = replaceInText(note.text, from, to, expected, insert);
+      if (next === null) return false;
+      note.text = next;
+      return true;
+    },
+    resolveBehavior: () => note.behavior,
   });
-  return { io, store, api, changes };
+  return { io, store, api, changes, note };
 }
 
 function bodyOf<T>(result: ApiResult): T {
@@ -306,6 +336,188 @@ describe("CommentsApi.remove", () => {
   });
 });
 
+async function seedSuggestion(replacement = "sleepy", quote = "lazy") {
+  const ctx = setup();
+  const created = await ctx.api.create(NOTE, { quote, replacement });
+  expect(created.status).toBe(201);
+  return { ...ctx, id: bodyOf<ThreadJson>(created).id };
+}
+
+describe("CommentsApi.accept", () => {
+  it("replaces the passage and records the suggestion as accepted", async () => {
+    const { api, store, note, id } = await seedSuggestion();
+    await api.reply(NOTE, id, { text: "Agreed" });
+    const result = await api.accept(NOTE, id);
+    expect(result.status).toBe(200);
+    expect(bodyOf<DecisionJson>(result)).toMatchObject({
+      result: "accepted",
+      comment: { id, resolved: true, x_suggestion: { replacement: "sleepy", result: "accepted" } },
+    });
+    expect(note.text).toBe(TEXT.replace("lazy", "sleepy"));
+    expect((await store.load(NOTE)).doc.comments.map((c) => c.resolved)).toEqual([true, true]);
+  });
+
+  it("removes the thread instead when resolved threads are removed", async () => {
+    const { api, io, note, id } = await seedSuggestion();
+    note.behavior = "remove";
+    expect(bodyOf<DecisionJson>(await api.accept(NOTE, id))).toEqual({ result: "accepted", comment: null });
+    expect(note.text).toBe(TEXT.replace("lazy", "sleepy"));
+    expect(io.files.has(sidecarPathFor(NOTE))).toBe(false);
+  });
+
+  it("deletes a word without leaving a double space", async () => {
+    const { api, note, id } = await seedSuggestion("");
+    await api.accept(NOTE, id);
+    expect(note.text).toBe(TEXT.replace("lazy ", ""));
+  });
+
+  it("refuses a suggestion that was already decided", async () => {
+    const { api, note, id } = await seedSuggestion();
+    await api.decline(NOTE, id);
+    expectError(await api.accept(NOTE, id), ErrorCodes.suggestionDecided);
+    expect(note.text).toBe(TEXT);
+  });
+
+  it("refuses a comment that isn't a suggestion, and an unknown id", async () => {
+    const { api } = await seed();
+    expectError(await api.accept(NOTE, "c1"), ErrorCodes.notASuggestion);
+    expectError(await api.accept(NOTE, "c2"), ErrorCodes.notASuggestion);
+    expectError(await api.accept(NOTE, "nope"), ErrorCodes.unknownComment);
+  });
+
+  it("refuses a reply even when it carries suggestion data", async () => {
+    const { api, store, note, id } = await seedSuggestion();
+    await api.reply(NOTE, id, { text: "Agreed" });
+    await store.update(NOTE, (doc) => {
+      doc.comments[1].x_suggestion = { replacement: "sleepy" };
+    });
+    const before = (await store.load(NOTE)).doc.comments;
+    expectError(await api.accept(NOTE, "c2"), ErrorCodes.notASuggestion);
+    expectError(await api.decline(NOTE, "c2"), ErrorCodes.notASuggestion);
+    expect(note.text).toBe(TEXT);
+    expect((await store.load(NOTE)).doc.comments).toEqual(before);
+  });
+
+  it("refuses when the suggestion is retargeted to another occurrence after its passage was found", async () => {
+    const { api, store, note } = setup();
+    const id = bodyOf<ThreadJson>(await api.create(NOTE, { quote: "fox", occurrence: 1, replacement: "cat" })).id;
+    note.afterResolve = () =>
+      store.update(NOTE, (doc) => {
+        const second = TEXT.lastIndexOf("fox");
+        retarget(doc, id, anchorFieldsFor(TEXT, second, second + "fox".length));
+      });
+    expectError(await api.accept(NOTE, id), ErrorCodes.passageChanged);
+    expect(note.text).toBe(TEXT);
+    expect((await store.load(NOTE)).doc.comments[0]).toMatchObject({ resolved: false, x_suggestion: { replacement: "cat" } });
+  });
+
+  it("refuses, changing nothing, when the passage is gone, ambiguous, or changed", async () => {
+    const orphaned = await seedSuggestion();
+    orphaned.note.text = "Something else entirely.\n";
+    expectError(await orphaned.api.accept(NOTE, orphaned.id), ErrorCodes.passageOrphaned);
+
+    // Only a quote to go by, with no line or context to choose between its matches.
+    const ambiguous = { ...setup("lazy\n\nlazy\n"), id: "s" };
+    await ambiguous.store.update(NOTE, (doc) =>
+      addSuggestion(doc, { id: "s", author: "A", timestamp: "2026-09-24T10:00:00Z", text: "" }, { selected_text: "lazy" }, "sleepy")
+    );
+    expectError(await ambiguous.api.accept(NOTE, ambiguous.id), ErrorCodes.passageAmbiguous);
+
+    for (const { api, store, id } of [orphaned, ambiguous]) {
+      expect((await store.load(NOTE)).doc.comments.find((c) => c.id === id)).toMatchObject({ resolved: false });
+      expect((await store.load(NOTE)).doc.comments.find((c) => c.id === id)?.x_suggestion).toEqual({ replacement: "sleepy" });
+      expect((await api.list(NOTE, { resolved: "false" })).status).toBe(200);
+    }
+    expect(orphaned.note.text).toBe("Something else entirely.\n");
+    expect(ambiguous.note.text).toBe("lazy\n\nlazy\n");
+  });
+
+  it("refuses a passage that was found but now reads differently", async () => {
+    const { api, store, note, id } = await seedSuggestion("big brown fox", "quick brown fox");
+    note.text = TEXT.replace("quick brown fox", "quick browne fox");
+    const resolution = resolveComment((await store.load(NOTE)).doc.comments[0], note.text);
+    expect(resolution).toMatchObject({ kind: "resolved", fuzzy: true });
+    expectError(await api.accept(NOTE, id), ErrorCodes.passageChanged);
+    expect(note.text).toBe(TEXT.replace("quick brown fox", "quick browne fox"));
+  });
+
+  it("rolls the record back when the note changes before it can be edited", async () => {
+    const { api, store, note, id } = await seedSuggestion();
+    await api.reply(NOTE, id, { text: "Agreed" });
+    const before = (await store.load(NOTE)).doc.comments;
+    note.beforeReplace = () => {
+      note.text = TEXT.replace("the lazy", "a lazy");
+    };
+    expectError(await api.accept(NOTE, id), ErrorCodes.passageChanged);
+    expect(note.text).toBe(TEXT.replace("the lazy", "a lazy"));
+    expect((await store.load(NOTE)).doc.comments).toEqual(before);
+  });
+
+  it("rolls the record back and rethrows when the note can't be written", async () => {
+    const { api, store, note, id } = await seedSuggestion();
+    const before = (await store.load(NOTE)).doc.comments;
+    note.beforeReplace = () => {
+      throw new Error("read-only");
+    };
+    await expect(api.accept(NOTE, id)).rejects.toThrow("read-only");
+    expect((await store.load(NOTE)).doc.comments).toEqual(before);
+  });
+
+  it("keeps a reply that lands on the thread while the record is being rolled back", async () => {
+    for (const behavior of ["keep", "remove"] as const) {
+      const { api, store, note, id } = await seedSuggestion();
+      note.behavior = behavior;
+      const before = (await store.load(NOTE)).doc.comments;
+      note.beforeReplace = async () => {
+        note.text = TEXT.replace("the lazy", "a lazy");
+        // Only lands when the thread is still there, i.e. when decided threads are kept.
+        await api.reply(NOTE, id, { text: "Wait" });
+      };
+      expectError(await api.accept(NOTE, id), ErrorCodes.passageChanged);
+      const after = (await store.load(NOTE)).doc.comments;
+      expect(after.slice(0, before.length)).toEqual(before);
+      if (behavior === "keep") expect(after[1]).toMatchObject({ reply_to: id, text: "Wait", resolved: false });
+      else expect(after).toHaveLength(before.length);
+    }
+  });
+
+  it("refuses when the comment file can't be read", async () => {
+    const { api, io, id } = await seedSuggestion();
+    io.files.set(sidecarPathFor(NOTE), "comments: [unterminated");
+    expectError(await api.accept(NOTE, id), ErrorCodes.unreadableSidecar);
+  });
+});
+
+describe("CommentsApi.decline", () => {
+  it("records the suggestion as declined and leaves the note alone", async () => {
+    const { api, store, note, id } = await seedSuggestion();
+    const result = await api.decline(NOTE, id);
+    expect(result.status).toBe(200);
+    expect(bodyOf<DecisionJson>(result)).toMatchObject({
+      result: "declined",
+      comment: { id, resolved: true, x_suggestion: { replacement: "sleepy", result: "declined" } },
+    });
+    expect(note.text).toBe(TEXT);
+    expect((await store.load(NOTE)).doc.comments[0].resolved).toBe(true);
+  });
+
+  it("removes the thread when resolved threads are removed", async () => {
+    const { api, io, note, id } = await seedSuggestion();
+    note.behavior = "remove";
+    expect(bodyOf<DecisionJson>(await api.decline(NOTE, id))).toEqual({ result: "declined", comment: null });
+    expect(io.files.has(sidecarPathFor(NOTE))).toBe(false);
+  });
+
+  it("refuses what can't be declined", async () => {
+    const { api, id } = await seedSuggestion();
+    await api.decline(NOTE, id);
+    expectError(await api.decline(NOTE, id), ErrorCodes.suggestionDecided);
+    expectError(await api.decline(NOTE, "nope"), ErrorCodes.unknownComment);
+    await api.create(NOTE, { text: "Plain", quote: "brown fox" });
+    expectError(await api.decline(NOTE, "c2"), ErrorCodes.notASuggestion);
+  });
+});
+
 describe("CommentsApi on a file that isn't a Markdown note", () => {
   const IMAGE = "dir/image.png";
 
@@ -318,6 +530,8 @@ describe("CommentsApi on a file that isn't a Markdown note", () => {
       await api.reply(IMAGE, "c1", { text: "Thanks" }),
       await api.patch(IMAGE, "c1", { resolved: true }),
       await api.remove(IMAGE, "c1"),
+      await api.accept(IMAGE, "c1"),
+      await api.decline(IMAGE, "c1"),
     ];
     for (const result of results) expectError(result, ErrorCodes.notANote);
     expect(io.files.size).toBe(0);
