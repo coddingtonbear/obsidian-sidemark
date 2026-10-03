@@ -5,6 +5,7 @@ import { buildThreads } from "../src/model";
 import type { McpToolDefinition, McpToolResult } from "../src/rest-api";
 import { CommentsApi, ErrorCodes, type ThreadJson } from "../src/rest-comments";
 import { type SidecarIO, SidecarStore } from "../src/store";
+import { replaceInText } from "../src/suggestion-edit";
 
 class MemoryIO implements SidecarIO {
   files = new Map<string, string>();
@@ -30,13 +31,20 @@ function setup() {
   const io = new MemoryIO();
   const store = new SidecarStore(io);
   let n = 0;
+  const note = { text: TEXT };
   const api = new CommentsApi({
     load: (p) => store.load(p),
     update: (p, mutate) => store.update(p, mutate, "external"),
-    noteText: async () => TEXT,
+    noteText: async () => note.text,
     resolveThreads: async (p) =>
-      buildThreads((await store.load(p)).doc).map((thread) => ({ thread, resolution: resolveComment(thread.root, TEXT) })),
+      buildThreads((await store.load(p)).doc).map((thread) => ({ thread, resolution: resolveComment(thread.root, note.text) })),
     newEntry: (body, author) => ({ id: `c${++n}`, author: author ?? "Adam", timestamp: `2026-09-24T10:00:0${n}Z`, text: body }),
+    replacePassage: async (_p, from, to, expected, insert) => {
+      const next = replaceInText(note.text, from, to, expected, insert);
+      if (next !== null) note.text = next;
+      return next !== null;
+    },
+    resolveBehavior: () => "keep",
   });
   const resolved: string[] = [];
   const tools = new Map<string, McpToolDefinition>(
@@ -50,7 +58,7 @@ function setup() {
     if (!tool) throw new Error(`No tool ${name}`);
     return tool.callback(args);
   };
-  return { io, store, tools, call, resolved };
+  return { io, store, tools, call, resolved, note };
 }
 
 function json<T>(result: McpToolResult): T {
@@ -68,6 +76,8 @@ describe("commentTools", () => {
       "comments_reply",
       "comments_update",
       "comments_delete",
+      "comments_accept",
+      "comments_decline",
     ]);
     for (const tool of tools.values()) {
       expect(tool.inputSchema?.path).toBeDefined();
@@ -119,6 +129,28 @@ describe("commentTools", () => {
     const bare = await call("comments_add", { path: NOTE, quote: "lazy" });
     expect(bare.isError).toBe(true);
     expect(json<{ errorCode: number }>(bare).errorCode).toBe(ErrorCodes.invalidBody);
+  });
+
+  it("accepts and declines suggested edits", async () => {
+    const { call, note } = setup();
+    await call("comments_add", { path: NOTE, quote: "lazy", replacement: "sleepy" });
+    await call("comments_add", { path: NOTE, quote: "quick", replacement: "slow" });
+
+    const accepted = await call("comments_accept", { path: NOTE, id: "c1" });
+    expect(accepted.isError).toBeUndefined();
+    expect(json<{ result: string; comment: { x_suggestion: unknown } }>(accepted)).toMatchObject({
+      result: "accepted",
+      comment: { x_suggestion: { replacement: "sleepy", result: "accepted" } },
+    });
+    expect(note.text).toContain("over the sleepy dog");
+
+    const declined = json<{ result: string }>(await call("comments_decline", { path: NOTE, id: "c2" }));
+    expect(declined.result).toBe("declined");
+    expect(note.text).toContain("The quick brown fox");
+
+    const again = await call("comments_accept", { path: NOTE, id: "c2" });
+    expect(again.isError).toBe(true);
+    expect(json<{ errorCode: number }>(again).errorCode).toBe(ErrorCodes.suggestionDecided);
   });
 
   it("edits text, refusing a stale expected_text", async () => {
@@ -175,6 +207,8 @@ describe("commentTools", () => {
       noteText: async () => TEXT,
       resolveThreads: async () => [],
       newEntry: (text) => ({ id: "c1", author: "Adam", timestamp: "2026-09-24T10:00:00Z", text }),
+      replacePassage: async () => false,
+      resolveBehavior: () => "keep",
     });
     const [list] = commentTools(api, (path) => path);
     expect(await list.callback({ path: NOTE })).toEqual({

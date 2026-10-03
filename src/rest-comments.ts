@@ -1,20 +1,27 @@
 import { anchorFieldsFor, type Resolution } from "./anchoring";
 import type { ResolvedThread } from "./export";
 import { selectedTextHash } from "./hash";
-import { buildThreads, type Comment, isResolved, isSuggestionComment, type MrsfDocument, type Thread } from "./model";
+import { buildThreads, type Comment, isResolved, isSuggestionComment, type MrsfDocument, type SuggestionResult, type Thread } from "./model";
 import {
   addComment,
   addReply,
   addSuggestion,
   deleteComment,
   deleteThread,
+  descendantIds,
   editText,
   findComment,
+  finishSuggestion,
   type NewEntry,
+  openSuggestion,
+  type ResolveBehavior,
+  sameAnchor,
   setThreadResolved,
+  type SuggestionFailure,
 } from "./mutations";
 import { rangeToLineColumns } from "./positions";
 import type { SidecarState, UpdateResult } from "./store";
+import { suggestionEdit } from "./suggestion-edit";
 
 /**
  * The comments sub-resource Sidemark adds to Local REST API
@@ -33,6 +40,14 @@ export interface CommentsBackend {
   resolveThreads(notePath: string): Promise<ResolvedThread[]>;
   /** A new comment's id, author, and timestamp; `author` overrides the plugin's author name. */
   newEntry(text: string, author?: string): NewEntry;
+  /**
+   * Replaces `[from, to)` of the note's text (as `noteText` reads it) with
+   * `insert`, if that range still reads `expected`; through the editor when the
+   * note is open, so the edit can be undone there. False when it doesn't match.
+   */
+  replacePassage(notePath: string, from: number, to: number, expected: string, insert: string): Promise<boolean>;
+  /** Whether a decided suggestion is kept as a resolved thread or removed. */
+  resolveBehavior(): ResolveBehavior;
 }
 
 export interface ApiResult {
@@ -80,8 +95,14 @@ export const ErrorCodes = {
   unreadableSidecar: 40901,
   ambiguousQuote: 40902,
   textConflict: 40903,
+  suggestionDecided: 40904,
+  passageOrphaned: 40905,
+  passageAmbiguous: 40906,
+  passageChanged: 40907,
   quoteNotFound: 42201,
   suggestionResolve: 42202,
+  notASuggestion: 42203,
+  invalidSuggestion: 42204,
 } as const;
 
 function error(errorCode: number, message: string, extra: Record<string, unknown> = {}): ApiResult {
@@ -162,6 +183,37 @@ function optionalAuthor(body: Record<string, unknown>): Fields<string | undefine
   if (value === undefined) return { ok: true, value: undefined };
   if (typeof value !== "string" || value.trim() === "") return badBody('"author" must be a non-empty string.');
   return { ok: true, value: value.trim() };
+}
+
+export interface DecisionJson {
+  result: SuggestionResult;
+  /** The suggestion's first comment as recorded now; null when its thread was removed. */
+  comment: Comment | null;
+}
+
+function decided(result: SuggestionResult, comment: Comment | null): ApiResult {
+  const body: DecisionJson = { result, comment };
+  return { status: 200, body };
+}
+
+/** Why a suggestion can't be accepted or declined, as a refusal. */
+function undecidable(id: string, reason: SuggestionFailure | "orphaned" | "ambiguous" | "changed"): ApiResult {
+  switch (reason) {
+    case "missing":
+      return unknown(id);
+    case "not-suggestion":
+      return error(ErrorCodes.notASuggestion, `The comment "${id}" isn't a suggested edit's first comment.`);
+    case "invalid-suggestion":
+      return error(ErrorCodes.invalidSuggestion, "The suggestion's data is invalid; its replacement must be text.");
+    case "already-resolved":
+      return error(ErrorCodes.suggestionDecided, "The suggestion has already been accepted, declined, or resolved.");
+    case "orphaned":
+      return error(ErrorCodes.passageOrphaned, "The suggested passage can no longer be found in the note.");
+    case "ambiguous":
+      return error(ErrorCodes.passageAmbiguous, "The suggested passage appears more than once in the note, so which one to change isn't clear.");
+    case "changed":
+      return error(ErrorCodes.passageChanged, "The suggested passage has changed since the suggestion was made.");
+  }
 }
 
 /** Every offset where `quote` starts in `text`, overlapping matches included. */
@@ -291,8 +343,8 @@ export class CommentsApi {
   /**
    * `PATCH /<id>` — `{text, expected_text?}` edits the comment, refusing with 409
    * when `expected_text` no longer matches; `{resolved}` resolves or reopens its
-   * whole thread. Suggestions are resolved by accepting or declining them in
-   * Obsidian, so `resolved` is refused on a suggestion's thread.
+   * whole thread. Suggestions are resolved by accepting or declining them, so
+   * `resolved` is refused on a suggestion's thread.
    */
   async patch(notePath: string, id: string, rawBody: unknown): Promise<ApiResult> {
     const refused = notANote(notePath);
@@ -325,7 +377,7 @@ export class CommentsApi {
       if (resolved !== undefined && isSuggestionComment(thread.root)) {
         return {
           ok: false,
-          result: error(ErrorCodes.suggestionResolve, "A suggestion is resolved by accepting or declining it in Obsidian."),
+          result: error(ErrorCodes.suggestionResolve, "A suggestion is resolved by accepting or declining it (POST …/accept or …/decline)."),
         };
       }
       if (text.value !== undefined) editText(doc, id, comment.text, text.value);
@@ -335,6 +387,95 @@ export class CommentsApi {
     if (!saved.ok) return unreadable(saved.error);
     if (!saved.value.ok) return saved.value.result;
     return { status: 200, body: { comment: saved.value.comment } };
+  }
+
+  /**
+   * `POST /<id>/accept` — replaces the suggested passage in the note with the
+   * suggestion's replacement and records it as accepted (or removes its thread,
+   * when Sidemark is set to remove resolved threads). Refused, changing nothing,
+   * when the passage can't be found, appears more than once, or no longer reads
+   * as it did when the suggestion was made.
+   */
+  async accept(notePath: string, id: string): Promise<ApiResult> {
+    const refused = notANote(notePath);
+    if (refused) return refused;
+    const state = await this.backend.load(notePath);
+    if (state.error) return unreadable(state.error);
+    const check = openSuggestion(state.doc, id);
+    if (!check.ok) return undecidable(id, check.reason);
+    const anchored = findComment(state.doc, id);
+    if (!anchored) return undecidable(id, "missing");
+    const quoted = anchored.selected_text;
+    const text = await this.backend.noteText(notePath);
+    const resolution = (await this.backend.resolveThreads(notePath)).find((t) => t.thread.root.id === id)?.resolution;
+    if (!resolution || resolution.kind === "orphaned") return undecidable(id, "orphaned");
+    if (resolution.ambiguous) return undecidable(id, "ambiguous");
+    if (text.slice(resolution.from, resolution.to) !== quoted) return undecidable(id, "changed");
+
+    // Recorded before the note is edited, so a comment file that can't be written never leaves an unrecorded edit behind.
+    type Recorded =
+      | { ok: true; replacement: string; thread: Comment[]; comment: Comment | null }
+      | { ok: false; reason: SuggestionFailure | "changed" };
+    const behavior = this.backend.resolveBehavior();
+    const saved = await this.backend.update(notePath, (doc): Recorded => {
+      // The passage was found from this anchor, so any change to it (a retarget to another occurrence of the same words, say) voids the lookup.
+      const current = findComment(doc, id);
+      if (current && !sameAnchor(current, anchored)) return { ok: false, reason: "changed" };
+      const ids = descendantIds(doc, id).add(id);
+      const thread = structuredClone(doc.comments.filter((c) => ids.has(c.id)));
+      const outcome = finishSuggestion(doc, id, "accepted", behavior);
+      if (!outcome.ok) return outcome;
+      return { ok: true, replacement: outcome.suggestion.replacement, thread, comment: findComment(doc, id) ?? null };
+    });
+    if (!saved.ok) return unreadable(saved.error);
+    const recorded = saved.value;
+    if (!recorded.ok) return undecidable(id, recorded.reason);
+
+    // Undoes only the decision, so a reply or edit that landed on the thread in the meantime survives.
+    const restore = () =>
+      this.backend.update(notePath, (doc) => {
+        for (const before of recorded.thread) {
+          const current = findComment(doc, before.id);
+          if (!current) {
+            doc.comments.push(before);
+            continue;
+          }
+          current.resolved = before.resolved;
+          if (before.id === id) current.x_suggestion = before.x_suggestion;
+        }
+      });
+    const edit = suggestionEdit(text, resolution.from, resolution.to, recorded.replacement);
+    let replaced: boolean;
+    try {
+      replaced = await this.backend.replacePassage(notePath, edit.from, edit.to, text.slice(edit.from, edit.to), edit.insert);
+    } catch (e) {
+      await restore();
+      throw e;
+    }
+    if (!replaced) {
+      // The note changed after it was read.
+      await restore();
+      return undecidable(id, "changed");
+    }
+    return decided("accepted", recorded.comment);
+  }
+
+  /**
+   * `POST /<id>/decline` — records the suggestion as declined without touching
+   * the note (or removes its thread, when Sidemark is set to remove resolved threads).
+   */
+  async decline(notePath: string, id: string): Promise<ApiResult> {
+    const refused = notANote(notePath);
+    if (refused) return refused;
+    const behavior = this.backend.resolveBehavior();
+    type Recorded = { ok: true; comment: Comment | null } | { ok: false; reason: SuggestionFailure };
+    const saved = await this.backend.update(notePath, (doc): Recorded => {
+      const outcome = finishSuggestion(doc, id, "declined", behavior);
+      return outcome.ok ? { ok: true, comment: findComment(doc, id) ?? null } : outcome;
+    });
+    if (!saved.ok) return unreadable(saved.error);
+    if (!saved.value.ok) return undecidable(id, saved.value.reason);
+    return decided("declined", saved.value.comment);
   }
 
   /** `DELETE /<id>` — a thread's root takes the whole thread with it; a reply goes alone. */
