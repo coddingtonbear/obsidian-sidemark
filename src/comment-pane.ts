@@ -34,6 +34,26 @@ export class CommentPanes<P> {
 }
 
 /**
+ * The pane to reveal a thread in, among `open`, the panes showing the note:
+ * the first of `preferred` that is open and follows selected comments, failing
+ * that the first open pane that does. Panes that opted out are passed over
+ * unless none of the note's panes follow, in which case all of them are
+ * candidates again — a thread is never left with nowhere to be revealed.
+ */
+export function revealPane<P>(
+  open: readonly P[],
+  follows: (pane: P) => boolean,
+  preferred: readonly (P | undefined)[]
+): P | undefined {
+  const following = open.filter(follows);
+  const candidates = following.length > 0 ? following : open;
+  for (const pane of preferred) {
+    if (pane !== undefined && candidates.includes(pane)) return pane;
+  }
+  return candidates[0];
+}
+
+/**
  * The pane to take a selection from, among `open`, the panes showing the note:
  * the first of `preferred` that is open with text selected, failing that the
  * first open pane with text selected. Editors keep their selection when they

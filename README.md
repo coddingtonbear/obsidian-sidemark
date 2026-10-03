@@ -68,6 +68,7 @@ If you use Obsidian Sync, turn on syncing of "other file types" so the `.review.
 - **Compact threads:** the panel shows each thread briefly: author, time, a line of the quoted text and the start of the comment. Selecting a thread (click it, or put the cursor in its passage) expands it to show its replies and the reply box; Esc collapses it. A thread with an unsent reply stays expanded.
 - **Resolve and decide:** each card's actions sit in its top-right corner (shown on hover until the card is selected): ✓ resolves a comment or accepts a suggestion, ✕ declines a suggestion, and ↺ reopens a resolved thread.
 - **Open a thread:** click a highlight to open its thread; click the quote in the sidebar to jump to the passage.
+- **A note in several panes:** selecting a thread scrolls its passage into view in every pane showing the note. To keep one pane still while you write in it, right-click in it and check *Don't follow selected comments*: it still highlights the passage but no longer scrolls, and clicking a quote jumps to the passage in another pane. The setting lasts until the pane is closed.
 - **Edit your own text:** double-click a comment's text to edit it. The `…` menu copies or deletes a comment.
 - **Undoing an accepted suggestion:** Undo restores the note's text, but the suggestion stays marked accepted. Use *Show resolved threads* in the sidebar's ⋯ menu, then the ↺ (Reopen) button on its card, to act on it again.
 

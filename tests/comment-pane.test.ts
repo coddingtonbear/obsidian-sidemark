@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CommentPanes, selectionPane } from "../src/comment-pane";
+import { CommentPanes, revealPane, selectionPane } from "../src/comment-pane";
 
 // Panes are compared by identity, as editors are.
 const left = { name: "left" };
@@ -52,6 +52,44 @@ describe("CommentPanes", () => {
     panes.remember("note.md", right);
     panes.forget("note.md");
     expect(panes.paneFor("note.md", [left, right])).toBeUndefined();
+  });
+});
+
+describe("revealPane", () => {
+  const following =
+    (...optedOut: object[]) =>
+    (pane: object) =>
+      !optedOut.includes(pane);
+
+  it("takes the first preferred pane that follows", () => {
+    expect(revealPane([left, right], following(), [right, left])).toBe(right);
+  });
+
+  it("passes over a preferred pane that opted out", () => {
+    expect(revealPane([left, right], following(right), [right])).toBe(left);
+    expect(revealPane([left, right], following(left), [left, undefined])).toBe(right);
+  });
+
+  it("falls back to the first following pane when no preference applies", () => {
+    expect(revealPane([left, right], following(left), [])).toBe(right);
+  });
+
+  it("ignores a preferred pane that doesn't show the note", () => {
+    const elsewhere = { name: "elsewhere" };
+    expect(revealPane([left, right], following(), [elsewhere])).toBe(left);
+  });
+
+  it("still reveals in an opted-out pane when it's the only one on the note", () => {
+    expect(revealPane([right], following(right), [right])).toBe(right);
+  });
+
+  it("treats every pane as a candidate when all of them opted out", () => {
+    expect(revealPane([left, right], following(left, right), [right])).toBe(right);
+    expect(revealPane([left, right], following(left, right), [])).toBe(left);
+  });
+
+  it("has no pane when the note isn't open", () => {
+    expect(revealPane([], following(), [left])).toBeUndefined();
   });
 });
 
