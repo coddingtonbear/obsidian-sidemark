@@ -105,6 +105,22 @@ describe("commentTools", () => {
     expect(json<{ threads: ThreadJson[] }>(await call("comments_list", { path: NOTE })).threads).toEqual([]);
   });
 
+  it("adds a suggested edit when given a replacement, and still needs text for a comment", async () => {
+    const { call } = setup();
+    const suggested = await call("comments_add", { path: NOTE, quote: "lazy", replacement: "sleepy", author: "Claude" });
+    expect(suggested.isError).toBeUndefined();
+    expect(json<ThreadJson>(suggested).root).toMatchObject({
+      author: "Claude",
+      text: "",
+      type: "suggestion",
+      x_suggestion: { replacement: "sleepy" },
+    });
+
+    const bare = await call("comments_add", { path: NOTE, quote: "lazy" });
+    expect(bare.isError).toBe(true);
+    expect(json<{ errorCode: number }>(bare).errorCode).toBe(ErrorCodes.invalidBody);
+  });
+
   it("edits text, refusing a stale expected_text", async () => {
     const { call } = setup();
     await call("comments_add", { path: NOTE, text: "Nice", quote: "brown fox" });

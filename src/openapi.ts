@@ -213,16 +213,26 @@ function pathsFor({ prefix, parameters, note, operationSuffix }: Target): Record
       post: operation("AddComment", {
         summary: `Add a comment to ${note}`,
         description:
-          "Anchors a new comment on the passage `quote`, which must appear in the note exactly as given. When it appears more than once, `occurrence` chooses one.",
+          "Anchors a new comment on the passage `quote`, which must appear in the note exactly as given. When it appears more than once, `occurrence` chooses one. With `replacement`, the comment is a suggested edit that can be accepted in Obsidian, and `text` becomes its optional explanation.",
         requestBody: {
           required: true,
           content: json({
             type: "object",
-            required: ["text", "quote"],
+            required: ["quote"],
+            // `text` is optional only for a suggestion, so one of the two has to be sent.
+            anyOf: [{ required: ["text"] }, { required: ["replacement"] }],
             properties: {
-              text: { type: "string", description: "The comment.", example: "Consider a table here" },
+              text: {
+                type: "string",
+                description: "The comment; required unless `replacement` is sent, when it's the suggestion's optional explanation.",
+                example: "Consider a table here",
+              },
               quote: { type: "string", description: "The passage to comment on.", example: "the three options" },
               occurrence: { type: "integer", minimum: 1, description: "Which match of `quote` to anchor on, counting from 1." },
+              replacement: {
+                type: "string",
+                description: "Makes the comment a suggested edit: the text to replace the passage with. Empty suggests deleting it; it can't equal `quote`.",
+              },
               author: authorProperty,
             },
           }),
@@ -322,7 +332,7 @@ function tagDescription(pluginId: string): string {
   const events = COMMENT_EVENT_TYPES.map((type) => `\`${type}\``).join(", ");
   return [
     "Comments and suggested edits on your notes, added by the [Sidemark](https://github.com/coddingtonbear/obsidian-sidemark) plugin. They're kept in a `.review.yaml` file next to each note, and changes made here show up in Sidemark's sidebar immediately.",
-    "Only Markdown notes have comments. Suggested edits can be read here but only accepted or declined in Obsidian, since that edits the note.",
+    "Only Markdown notes have comments. Suggested edits can be read and added here but only accepted or declined in Obsidian, since that edits the note.",
     "#### Events",
     `Sidemark adds these events to the event streams, with \`${pluginId}\` as the emitter (\`POST /events/${pluginId}/{event}/\`): ${events}.`,
     "Each carries the note's `path`, the comment's `id`, its `thread` (the id of the thread's first comment), and the comment's `author`, `timestamp`, and `text` (left out of `comment-deleted`). A thread's resolving or reopening is reported once, for its first comment.",

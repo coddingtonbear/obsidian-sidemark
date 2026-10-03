@@ -138,7 +138,7 @@ When [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api)
 |---|---|
 | `GET …/comments/` | Lists the note's threads: each thread's root, its replies, and where its passage is now (`anchor`). `?resolved=false` or `?resolved=true` filters them. |
 | `GET …/comments/<id>` | Returns the comment and the thread it belongs to. |
-| `POST …/comments/` | Adds a comment. `{"text": "…", "quote": "…"}` anchors it on the passage `quote`; when the quote appears more than once, add `"occurrence": 2` (counting from 1) to choose one. `"author"` sets the author; otherwise it's your author name in Sidemark. |
+| `POST …/comments/` | Adds a comment. `{"text": "…", "quote": "…"}` anchors it on the passage `quote`; when the quote appears more than once, add `"occurrence": 2` (counting from 1) to choose one. `"author"` sets the author; otherwise it's your author name in Sidemark. Add `"replacement": "…"` to suggest an edit instead (an empty string suggests deleting the passage); `text` is then its optional explanation. |
 | `POST …/comments/<id>/replies` | Adds a reply: `{"text": "…", "author": "…"}`. |
 | `PATCH …/comments/<id>` | `{"text": "…"}` edits the comment; add `"expected_text"` to have the edit refused (409) if someone changed it first. `{"resolved": true}` resolves the thread and `false` reopens it. |
 | `DELETE …/comments/<id>` | Deletes a thread's first comment together with the thread, or a single reply. |
@@ -149,7 +149,7 @@ curl -k -X POST -H "Authorization: Bearer <api key>" -H "Content-Type: applicati
   "https://127.0.0.1:27124/vault/Projects/Plan.md/comments/"
 ```
 
-Suggested edits are listed with the other threads but can only be accepted or declined in Obsidian, since that edits the note. A comment file Sidemark can't parse is never written to; requests for its note answer 409 with the parse error. Only Markdown notes have comments; the routes answer 404 for any other file.
+Suggested edits are listed with the other threads and can be added here, but can only be accepted or declined in Obsidian, since that edits the note. A comment file Sidemark can't parse is never written to; requests for its note answer 409 with the parse error. Only Markdown notes have comments; the routes answer 404 for any other file.
 
 These routes, what they send, and their errors are described in the OpenAPI spec Local REST API serves at `/openapi.yaml` and `/openapi.json`, under the **Sidemark Comments** tag.
 

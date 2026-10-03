@@ -95,6 +95,19 @@ describe("commentsOpenApiDescription", () => {
     expect([...documented].sort()).toEqual(Object.values(ErrorCodes).map(String).sort());
   });
 
+  it("requires a quote and either text or a replacement to add a comment", () => {
+    for (const prefix of PREFIXES) {
+      const schema = [`${prefix}/`, "post", "requestBody", "content", "application/json", "schema"].reduce<unknown>(
+        (value, key) => (isObject(value) ? value[key] : undefined),
+        paths
+      );
+      if (!isObject(schema)) throw new Error(`no request schema for POST ${prefix}/`);
+      expect(schema.required).toEqual(["quote"]);
+      expect(schema.anyOf).toEqual([{ required: ["text"] }, { required: ["replacement"] }]);
+      expect(Object.keys(isObject(schema.properties) ? schema.properties : {})).toEqual(expect.arrayContaining(["text", "replacement"]));
+    }
+  });
+
   it("names every comment event and the emitter they're streamed under", () => {
     const text = commentsOpenApiDescription("some-id").tags?.[0].description ?? "";
     for (const type of COMMENT_EVENT_TYPES) expect(text).toContain(`\`${type}\``);
